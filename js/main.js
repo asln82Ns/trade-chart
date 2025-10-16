@@ -4,6 +4,7 @@ import CSVProcessor from './csv-processor.js';
 import ChartController from './chart-controller.js';
 import PlaybackEngine from './playback-engine.js';
 import TradeSimulator from './trade-simulator.js';
+import DirectionTracker from './direction-tracker.js';
 
 class TradeChartApp {
     constructor() {
@@ -11,6 +12,7 @@ class TradeChartApp {
         this.csvProcessor = null;
         this.chartController = null;
         this.tradeSimulator = null;
+        this.directionTracker = null;
         this.playbackEngine = null;
         
         this.initializeUI();
@@ -75,10 +77,15 @@ class TradeChartApp {
 
         this.chartController = new ChartController(this.elements.chartContainer);
         this.tradeSimulator = new TradeSimulator();
-        this.playbackEngine = new PlaybackEngine(this.chartController, this.tradeSimulator);
+        this.directionTracker = new DirectionTracker();
+        this.playbackEngine = new PlaybackEngine(this.chartController, this.tradeSimulator, this.directionTracker);
 
         this.playbackEngine.onTick((data) => {
             this.updatePlaybackInfo(data);
+
+            // Update direction points every tick
+            const directionPoints = this.directionTracker.getDirectionPoints();
+            this.chartController.updateDirectionPoints(directionPoints);
         });
 
         // Trade simulator updates
@@ -223,6 +230,26 @@ class TradeChartApp {
             }
 
             this.playbackEngine.loadBars(bars);
+
+            // Extract all trades from same UTC day for direction tracker
+            const loadDate = new Date(targetTimestamp).toISOString().split('T')[0];
+            const sameDayTrades = [];
+            
+            for (const bar of bars) {
+                const barDate = new Date(bar.timestamp).toISOString().split('T')[0];
+                if (barDate === loadDate) {
+                    for (const trade of bar.trades) {
+                        sameDayTrades.push(trade);
+                    }
+                }
+            }
+            
+            // Initialize direction tracker with historical data
+            this.directionTracker.initializeFromHistory(sameDayTrades);
+            
+            // Update chart with initial direction points
+            const directionPoints = this.directionTracker.getDirectionPoints();
+            this.chartController.updateDirectionPoints(directionPoints);
             
             const contextCount = Math.min(400, bars.length);
             const replayCount = Math.max(0, bars.length - 400);
@@ -261,6 +288,8 @@ class TradeChartApp {
     reset() {
         this.playbackEngine.reset();
         this.tradeSimulator.reset();
+        this.directionTracker.reset();
+        this.chartController.clearDirectionPoints();
         this.elements.playBtn.disabled = false;
         this.elements.pauseBtn.disabled = true;
         this.elements.buyBtn.disabled = true;

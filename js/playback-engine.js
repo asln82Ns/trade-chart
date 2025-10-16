@@ -1,8 +1,9 @@
 // Playback Engine - Handles tick-by-tick replay
 class PlaybackEngine {
-    constructor(chartController, tradeSimulator = null) {
+    constructor(chartController, tradeSimulator = null, directionTracker = null) {
         this.chartController = chartController;
         this.tradeSimulator = tradeSimulator;
+        this.directionTracker = directionTracker;
         this.allBars = [];
         this.contextBars = [];
         this.replayBars = [];
@@ -156,6 +157,13 @@ class PlaybackEngine {
             if (this.tradeSimulator) {
                 this.tradeSimulator.processTick(trade);
             }
+
+            // Send trade to direction tracker if available
+            if (this.directionTracker) {
+                const globalTradeIndex = this.calculateGlobalTradeIndex();
+                this.directionTracker.processTick(trade, globalTradeIndex, trade.time);
+            }
+    
             
             if (this.onTickCallback) {
                 this.onTickCallback({
@@ -213,6 +221,26 @@ class PlaybackEngine {
         }
         
         return null;
+    }
+
+    calculateGlobalTradeIndex() {
+        // Calculate cumulative trade index across all bars processed so far
+        let index = 0;
+        
+        // Add all trades from context bars
+        for (let i = 0; i < this.contextBars.length; i++) {
+            index += this.contextBars[i].trades.length;
+        }
+        
+        // Add trades from replay bars up to current position
+        for (let i = 0; i < this.currentBarIndex; i++) {
+            index += this.replayBars[i].trades.length;
+        }
+        
+        // Add current trade index within current bar
+        index += this.currentTradeIndex;
+        
+        return index;
     }
 }
 

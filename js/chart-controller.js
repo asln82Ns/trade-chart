@@ -62,6 +62,8 @@ class ChartController {
             fixLeftEdge: false,
             fixRightEdge: false,
         });
+
+        this.directionLines = new Map(); // price -> priceLine object
     }
 
     formatUTCTime(date) {
@@ -111,6 +113,44 @@ class ChartController {
 
     setHoverCallback(callback) {
         this.onHoverCallback = callback;
+    }
+
+    updateDirectionPoints(directionPoints) {
+        // Remove old lines that are no longer direction points
+        const currentPrices = new Set(directionPoints.map(dp => dp.price));
+        
+        for (const [price, line] of this.directionLines) {
+            if (!currentPrices.has(price)) {
+                this.candlestickSeries.removePriceLine(line);
+                this.directionLines.delete(price);
+            }
+        }
+        
+        // Add/update direction points
+        for (const dp of directionPoints) {
+            if (!this.directionLines.has(dp.price)) {
+                const color = dp.direction === '+' 
+                    ? 'rgba(76, 175, 80, 0.5)'  // Green for upward direction
+                    : 'rgba(244, 67, 54, 0.5)';  // Red for downward direction
+                
+                const line = this.candlestickSeries.createPriceLine({
+                    price: dp.price,
+                    color: color,
+                    lineWidth: 1,
+                    lineStyle: LightweightCharts.LineStyle.Dotted,
+                    axisLabelVisible: true,
+                    title: `DP${dp.direction}`
+                });
+                this.directionLines.set(dp.price, line);
+            }
+        }
+    }
+
+    clearDirectionPoints() {
+        for (const [price, line] of this.directionLines) {
+            this.candlestickSeries.removePriceLine(line);
+        }
+        this.directionLines.clear();
     }
 }
 
