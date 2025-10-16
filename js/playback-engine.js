@@ -8,7 +8,7 @@ class PlaybackEngine {
         this.currentBarIndex = 0;
         this.currentTradeIndex = 0;
         this.isPlaying = false;
-        this.ticksPerSecond = 25;
+        this.ticksPerSecond = 100;
         this.lastFrameTime = 0;
         this.tickAccumulator = 0;
         this.animationFrameId = null;
@@ -48,7 +48,7 @@ class PlaybackEngine {
     }
 
     setSpeed(ticksPerSecond) {
-        this.ticksPerSecond = Math.max(5, Math.min(500, ticksPerSecond));
+        this.ticksPerSecond = Math.max(10, Math.min(1000, ticksPerSecond));
     }
 
     play() {
