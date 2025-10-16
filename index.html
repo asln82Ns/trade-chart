@@ -41,9 +41,46 @@
 
             <div class="control-group">
                 <label for="speedControl">Speed (ticks/sec): <span id="speedValue">100</span></label>
-                <input type="range" id="speedControl" min="10" max="1000" value="100" step="10" disabled>
+                <input type="range" id="speedControl" min="10" max="5000" value="100" step="10" disabled>
+                <button class="speed-preset-btn" data-speed="10" disabled>10</button>
+                <button class="speed-preset-btn" data-speed="100" disabled>100</button>
+                <button class="speed-preset-btn" data-speed="300" disabled>300</button>
+                <button class="speed-preset-btn" data-speed="5000" disabled>5000</button>
             </div>
 
+            <!-- Trade Controls -->
+            <div class="control-group trade-controls">
+                <label for="quantityInput">Quantity:</label>
+                <input type="number" id="quantityInput" min="1" value="1" step="1">
+                <button id="buyBtn" class="buy-btn" disabled>BUY</button>
+                <button id="sellBtn" class="sell-btn" disabled>SELL</button>
+            </div>
+
+            <!-- Trade Info Panel -->
+            <div class="info-panel trade-info-panel">
+                <div class="info-item">
+                    <span class="info-label">Position:</span>
+                    <span id="positionDisplay" class="position-text">FLAT</span>
+                </div>
+                <div class="info-item">
+                    <span class="info-label">Avg Entry:</span>
+                    <span id="avgEntryDisplay">--</span>
+                </div>
+                <div class="info-item">
+                    <span class="info-label">Realized P&L:</span>
+                    <span id="realizedPnL">+$0.00</span>
+                </div>
+                <div class="info-item">
+                    <span class="info-label">Unrealized P&L:</span>
+                    <span id="unrealizedPnL">+$0.00</span>
+                </div>
+                <div class="info-item">
+                    <span class="info-label">Total P&L:</span>
+                    <span id="totalPnL" class="total-pnl">+$0.00</span>
+                </div>
+            </div>
+
+            <!-- Existing Info Panel -->
             <div class="info-panel">
                 <div class="info-item">
                     <span class="info-label">Current Time:</span>

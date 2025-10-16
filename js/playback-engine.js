@@ -1,7 +1,8 @@
 // Playback Engine - Handles tick-by-tick replay
 class PlaybackEngine {
-    constructor(chartController) {
+    constructor(chartController, tradeSimulator = null) {
         this.chartController = chartController;
+        this.tradeSimulator = tradeSimulator;
         this.allBars = [];
         this.contextBars = [];
         this.replayBars = [];
@@ -48,7 +49,7 @@ class PlaybackEngine {
     }
 
     setSpeed(ticksPerSecond) {
-        this.ticksPerSecond = Math.max(10, Math.min(1000, ticksPerSecond));
+        this.ticksPerSecond = Math.max(10, Math.min(5000, ticksPerSecond));
     }
 
     play() {
@@ -151,6 +152,11 @@ class PlaybackEngine {
                 close: this.currentBar.close
             });
             
+            // Send trade to simulator if available
+            if (this.tradeSimulator) {
+                this.tradeSimulator.processTick(trade);
+            }
+            
             if (this.onTickCallback) {
                 this.onTickCallback({
                     bar: this.currentBar,
@@ -193,6 +199,20 @@ class PlaybackEngine {
             totalReplayBars: this.replayBars.length,
             isPlaying: this.isPlaying
         };
+    }
+
+    // Get current trade for order placement
+    getCurrentTrade() {
+        if (this.currentBarIndex >= this.replayBars.length) {
+            return null;
+        }
+        
+        const bar = this.replayBars[this.currentBarIndex];
+        if (this.currentTradeIndex > 0 && this.currentTradeIndex <= bar.trades.length) {
+            return bar.trades[this.currentTradeIndex - 1];
+        }
+        
+        return null;
     }
 }
 

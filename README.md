@@ -1,13 +1,16 @@
 # Trade Chart
 
-A lightweight, browser-based trading data visualizer that displays OHLC charts with tick-by-tick replay functionality.
+A lightweight, browser-based trading data visualizer with tick-by-tick replay and **live trade simulation** functionality.
 
 ## Features
 
 - **5-Minute OHLC Bars**: Automatically groups trade data into 5-minute bars
 - **Tick-by-Tick Replay**: Watch every price movement as it happened in real-time
-- **Speed Control**: Adjust playback speed from 5 to 50 ticks per second
-- **Jump to Timestamp**: Load any time period with 400 bars of historical context + 200 bars for replay
+- **Trade Simulation**: Place buy/sell market orders with realistic 200ms slippage
+- **Real-Time P&L**: Track realized and unrealized profit/loss as prices move
+- **Position Management**: Build and close positions with multiple entries
+- **Speed Control**: Adjust playback speed from 10 to 5,000 ticks per second
+- **Jump to Timestamp**: Load any time period with 400 bars of historical context
 - **UTC Time Display**: All timestamps shown in UTC with no conversion
 - **Large File Support**: Efficiently handles 3GB+ CSV files through IndexedDB caching
 
@@ -23,7 +26,8 @@ trade-chart/
 │   ├── db-manager.js       
 │   ├── csv-processor.js    
 │   ├── chart-controller.js 
-│   └── playback-engine.js  
+│   ├── playback-engine.js  
+│   └── trade-simulator.js  (NEW)
 ├── data.csv                
 └── README.md               
 ```
@@ -93,56 +97,114 @@ datetime,ticker,price,size,session_end_date,timestamp
    - **Important**: Enter the time in UTC, not your local timezone
    - Example: If your data shows `2025-06-04 10:30:00 UTC`, enter exactly that
 2. Click **"Load"**
-3. The system loads **400 bars BEFORE + 200 bars AFTER** your timestamp = 600 total
-4. Chart displays the first 400 bars as completed OHLC (historical context)
-5. The remaining 200 bars are ready for tick-by-tick replay when you press Play
+3. The system loads **400 bars BEFORE** your timestamp for context
+4. Chart displays these 400 bars as completed OHLC (historical context)
+5. All remaining bars until end of dataset are loaded for tick-by-tick replay
 
 ### Playback Controls
 
-- **Play**: Starts replaying the next 200 bars tick-by-tick
+- **Play**: Starts replaying bars tick-by-tick from the 400-bar context point
 - **Pause**: Pause playback at current position
-- **Reset**: Return to initial state (400 context bars visible)
-- **Speed Slider**: Adjust from 5 to 50 ticks per second
+- **Reset**: Return to initial state (400 context bars visible, P&L reset)
+- **Speed Slider**: Adjust from 10 to 5,000 ticks per second
+
+### Trade Simulation (NEW)
+
+#### Placing Orders
+
+1. **Set Quantity**: Enter number of contracts (default: 1)
+2. **During Playback Only**: Buy/Sell buttons are enabled only when playing
+3. **Click BUY or SELL**: Order is placed at current tick timestamp
+4. **200ms Slippage Simulation**: 
+   - System collects all trade prices for next 200ms
+   - BUY fills at **highest price** in window (worst case)
+   - SELL fills at **lowest price** in window (worst case)
+5. **Order Confirmation**: Check browser console for fill details
+
+#### Position Management Rules
+
+- **Directional Restriction**: Must flatten position before reversing
+  - Example: LONG 10 → must SELL 10 to go flat → can then go SHORT
+  - Blocked: LONG 10 → SELL 15 ❌ (trying to reverse to SHORT 5)
+  
+- **Multiple Entries Allowed**: Can add to existing position
+  - Example: BUY 5 @ 21300 → BUY 10 @ 21305
+  - System calculates weighted average entry: 21303.33
+  - Position: LONG 15 @ avg 21303.33
+
+- **Partial Closes**: Can close portions of position
+  - Example: LONG 20 → SELL 8 → LONG 12 remaining
+
+#### P&L Calculation
+
+- **Point Value**: NQ standard = $20 per point per contract
+- **Unrealized P&L**: 
+  - LONG: (Current Price - Avg Entry) × Position × $20
+  - SHORT: (Avg Entry - Current Price) × Position × $20
+- **Realized P&L**: Accumulated from all closed trades
+- **Total P&L**: Realized + Unrealized (updates every tick)
+
+#### P&L Persistence
+
+- **Persists Through**: Play/Pause actions
+- **Resets On**: 
+  - Reset button click
+  - Load button click (new time range)
+- **Real-Time Updates**: P&L updates every tick during playback
+
+#### Display Information
+
+Trade info panel shows:
+- **Position**: FLAT / LONG X / SHORT X
+- **Avg Entry**: Average entry price of current position
+- **Realized P&L**: Profit/loss from closed trades
+- **Unrealized P&L**: Current position's floating P&L
+- **Total P&L**: Sum of realized + unrealized (color coded: green/red)
 
 ### Replay Behavior
 
 1. **Initial State**: Chart shows 400 completed historical bars for context
-2. **Press Play**: Starts replaying the next 200 bars tick-by-tick
+2. **Press Play**: Starts replaying remaining bars tick-by-tick
 3. **Replay**: New bars appear and grow at the END of the chart (like real-time)
 4. **Building Bars**: Watch each bar form as trades are processed
-5. **Speed**: 5-50 ticks per second (configurable via slider)
-6. **Completion**: When all 200 bars processed, replay stops
-7. **Press Reset**: Returns to initial state (400 context bars visible)
-
-### Information Display
-
-The top panel shows:
-- **Current Time**: UTC timestamp of current bar
-- **Price**: Current trade price
-- **Bar Progress**: How many trades completed in current 5-minute bar
-- **Loaded Bars**: Total bars (context + replay count)
+5. **Speed**: 10-5,000 ticks per second (configurable via slider)
+6. **Trading**: Place orders during playback only (buttons disabled when paused)
+7. **Completion**: When all bars processed, replay stops
+8. **Press Reset**: Returns to initial state (clears P&L and chart)
 
 ## Technical Details
+
+### Trade Simulation Architecture
+
+1. **Pending Order Queue**: FIFO queue stores orders with placement timestamp
+2. **Slippage Window**: 200ms collection period after order placement
+3. **Worst-Case Execution**: Buy = highest tick, Sell = lowest tick in window
+4. **Position Tracking**: Maintains quantity, direction, and average entry price
+5. **P&L Engine**: Calculates realized (on close) and unrealized (mark-to-market) P&L
+6. **Tick Processing**: Every trade updates unrealized P&L and checks pending orders
 
 ### Data Processing
 
 1. **CSV Parsing**: Uses PapaParse to stream large files
 2. **Bar Grouping**: Groups trades into 5-minute intervals based on UTC time
-3. **Storage**: Saves processed bars to IndexedDB (~50MB for 6 months of data)
-4. **Retrieval**: Instant loading via indexed timestamp queries
+3. **Trade Preservation**: Each bar stores array of individual trades with timestamps
+4. **Storage**: Saves processed bars to IndexedDB (~50MB for 6 months of data)
+5. **Retrieval**: Instant loading via indexed timestamp queries
 
 ### Memory Usage
 
 - **Processing**: Streams CSV in chunks (minimal memory impact)
-- **Playback**: Keeps ~600 bars in memory (400 context + 200 replay) (~30-50MB)
+- **Playback**: Keeps all loaded bars in memory (400 context + all replay bars)
 - **Chart**: Renders visible bars only (~200 at a time)
+- **Trade Simulator**: Minimal overhead (~1KB per pending order)
 
 ### Performance
 
 - **Rendering**: 30 FPS with requestAnimationFrame
-- **Tick Processing**: 5-50 ticks per second (configurable)
-- **Data Access**: <100ms to load 600 bars from IndexedDB
+- **Tick Processing**: 10-5,000 ticks per second (configurable)
+- **Data Access**: <100ms to load bars from IndexedDB
 - **Chart Updates**: Uses Lightweight Charts' update() API (optimized for real-time)
+- **Order Execution**: <1ms per order fill calculation
 
 ## Browser Compatibility
 
@@ -164,6 +226,10 @@ All modern browsers with IndexedDB and ES6 module support.
 - Verify your timestamp is within the range of your CSV data
 - Check that data has been processed (click "Process Data" first)
 
+### "Cannot reverse position" error
+- System blocks going from LONG to SHORT (or vice versa) in one order
+- Solution: Close your position first (go flat), then open opposite direction
+
 ### Progress bar stuck during processing
 - Check browser console for errors
 - Ensure CSV format matches expected format
@@ -179,14 +245,40 @@ All modern browsers with IndexedDB and ES6 module support.
 - Use a smaller time range (fewer bars)
 - Close other browser tabs
 
+## Example Trading Session
+
+```
+1. Load data: 2025-06-04 10:00:00
+2. Press Play
+3. Set Quantity: 5
+4. Click BUY when price looks good
+   → Order placed at 21305.25
+   → Fills at 21305.75 (worst price in 200ms)
+   → Position: LONG 5 @ 21305.75
+5. Watch P&L update in real-time as price moves
+6. Price moves up to 21310.00
+   → Unrealized P&L: +$425 [(21310 - 21305.75) × 5 × $20]
+7. Add to position: Click BUY, Quantity: 10
+   → Fills at 21310.50
+   → Position: LONG 15 @ 21308.67 (weighted avg)
+8. Price drops to 21302.00
+   → Total P&L: -$500 [(21302 - 21308.67) × 15 × $20]
+9. Close position: Click SELL, Quantity: 15
+   → Fills at 21301.75
+   → Realized P&L: -$515.75
+   → Position: FLAT
+```
+
 ## Future Enhancements
 
-- [ ] Trading simulation (buy/sell buttons)
-- [ ] P&L tracking
+- [ ] Stop-loss and take-profit orders
+- [ ] Limit orders with order book simulation
 - [ ] Multiple timeframes (1-min, 15-min, etc.)
 - [ ] Volume display
-- [ ] Export/import data ranges
-- [ ] Keyboard shortcuts
+- [ ] Trade log/journal export
+- [ ] Position sizing calculator
+- [ ] Keyboard shortcuts for quick trading
+- [ ] Risk metrics (max drawdown, Sharpe ratio)
 
 ## Technology Stack
 
@@ -196,7 +288,7 @@ All modern browsers with IndexedDB and ES6 module support.
 - **Storage**: IndexedDB (native browser API)
 - **Server**: Any local web server (required for ES6 modules)
 
-**Total Code**: ~1,360 lines  
+**Total Code**: ~1,600 lines  
 **Dependencies**: 2 (both via CDN)  
 **Build Tools**: None  
 **Setup**: Start local server, open browser

@@ -3,12 +3,14 @@ import DBManager from './db-manager.js';
 import CSVProcessor from './csv-processor.js';
 import ChartController from './chart-controller.js';
 import PlaybackEngine from './playback-engine.js';
+import TradeSimulator from './trade-simulator.js';
 
 class TradeChartApp {
     constructor() {
         this.dbManager = new DBManager();
         this.csvProcessor = null;
         this.chartController = null;
+        this.tradeSimulator = null;
         this.playbackEngine = null;
         
         this.initializeUI();
@@ -45,6 +47,7 @@ class TradeChartApp {
             resetBtn: document.getElementById('resetBtn'),
             speedControl: document.getElementById('speedControl'),
             speedValue: document.getElementById('speedValue'),
+            speedPresetBtns: document.querySelectorAll('.speed-preset-btn'),
             status: document.getElementById('status'),
             currentTime: document.getElementById('currentTime'),
             currentOpen: document.getElementById('currentOpen'),
@@ -53,14 +56,29 @@ class TradeChartApp {
             currentClose: document.getElementById('currentClose'),
             barProgress: document.getElementById('barProgress'),
             loadedBars: document.getElementById('loadedBars'),
-            chartContainer: document.getElementById('chartContainer')
+            chartContainer: document.getElementById('chartContainer'),
+            // Trade controls
+            buyBtn: document.getElementById('buyBtn'),
+            sellBtn: document.getElementById('sellBtn'),
+            quantityInput: document.getElementById('quantityInput'),
+            positionDisplay: document.getElementById('positionDisplay'),
+            avgEntryDisplay: document.getElementById('avgEntryDisplay'),
+            realizedPnL: document.getElementById('realizedPnL'),
+            unrealizedPnL: document.getElementById('unrealizedPnL'),
+            totalPnL: document.getElementById('totalPnL')
         };
 
         this.chartController = new ChartController(this.elements.chartContainer);
-        this.playbackEngine = new PlaybackEngine(this.chartController);
+        this.tradeSimulator = new TradeSimulator();
+        this.playbackEngine = new PlaybackEngine(this.chartController, this.tradeSimulator);
 
         this.playbackEngine.onTick((data) => {
             this.updatePlaybackInfo(data);
+        });
+
+        // Trade simulator updates
+        this.tradeSimulator.onUpdate((state) => {
+            this.updateTradeInfo(state);
         });
 
         // Setup hover callback to display OHLC on crosshair
@@ -89,6 +107,20 @@ class TradeChartApp {
             this.elements.speedValue.textContent = speed;
             this.playbackEngine.setSpeed(speed);
         });
+
+        // Speed preset buttons
+        this.elements.speedPresetBtns.forEach(btn => {
+            btn.addEventListener('click', () => {
+                const speed = parseInt(btn.dataset.speed);
+                this.elements.speedControl.value = speed;
+                this.elements.speedValue.textContent = speed;
+                this.playbackEngine.setSpeed(speed);
+            });
+        });
+
+        // Trade controls
+        this.elements.buyBtn.addEventListener('click', () => this.placeBuyOrder());
+        this.elements.sellBtn.addEventListener('click', () => this.placeSellOrder());
     }
 
     async processCSV() {
@@ -183,6 +215,9 @@ class TradeChartApp {
             this.elements.loadedBars.textContent = `${bars.length} (${contextCount} context + ${replayCount} replay)`;
             this.updateStatus(`Loaded ${bars.length} bars`);
             
+            // Reset trade simulator on new load
+            this.tradeSimulator.reset();
+            
             this.enablePlaybackControls();
 
         } catch (error) {
@@ -195,6 +230,8 @@ class TradeChartApp {
         this.playbackEngine.play();
         this.elements.playBtn.disabled = true;
         this.elements.pauseBtn.disabled = false;
+        this.elements.buyBtn.disabled = false;
+        this.elements.sellBtn.disabled = false;
         this.updateStatus('Playing');
     }
 
@@ -202,13 +239,18 @@ class TradeChartApp {
         this.playbackEngine.pause();
         this.elements.playBtn.disabled = false;
         this.elements.pauseBtn.disabled = true;
+        this.elements.buyBtn.disabled = true;
+        this.elements.sellBtn.disabled = true;
         this.updateStatus('Paused');
     }
 
     reset() {
         this.playbackEngine.reset();
+        this.tradeSimulator.reset();
         this.elements.playBtn.disabled = false;
         this.elements.pauseBtn.disabled = true;
+        this.elements.buyBtn.disabled = true;
+        this.elements.sellBtn.disabled = true;
         this.updateStatus('Reset');
         this.elements.currentTime.textContent = '--';
         this.elements.currentOpen.textContent = '--';
@@ -216,6 +258,56 @@ class TradeChartApp {
         this.elements.currentLow.textContent = '--';
         this.elements.currentClose.textContent = '--';
         this.elements.barProgress.textContent = '--';
+    }
+
+    placeBuyOrder() {
+        if (!this.playbackEngine.getCurrentState().isPlaying) {
+            return;
+        }
+
+        const quantity = parseInt(this.elements.quantityInput.value);
+        if (isNaN(quantity) || quantity <= 0) {
+            alert('Please enter a valid quantity (positive integer)');
+            return;
+        }
+
+        const trade = this.playbackEngine.getCurrentTrade();
+        if (!trade) {
+            alert('No current trade available');
+            return;
+        }
+
+        try {
+            this.tradeSimulator.placeOrder('buy', quantity, trade.time);
+            this.updateStatus(`BUY order placed: ${quantity} contracts`);
+        } catch (error) {
+            alert(error.message);
+        }
+    }
+
+    placeSellOrder() {
+        if (!this.playbackEngine.getCurrentState().isPlaying) {
+            return;
+        }
+
+        const quantity = parseInt(this.elements.quantityInput.value);
+        if (isNaN(quantity) || quantity <= 0) {
+            alert('Please enter a valid quantity (positive integer)');
+            return;
+        }
+
+        const trade = this.playbackEngine.getCurrentTrade();
+        if (!trade) {
+            alert('No current trade available');
+            return;
+        }
+
+        try {
+            this.tradeSimulator.placeOrder('sell', quantity, trade.time);
+            this.updateStatus(`SELL order placed: ${quantity} contracts`);
+        } catch (error) {
+            alert(error.message);
+        }
     }
 
     updatePlaybackInfo(data) {
@@ -230,6 +322,43 @@ class TradeChartApp {
         
         const progress = ((data.tradeIndex + 1) / data.totalTrades * 100).toFixed(1);
         this.elements.barProgress.textContent = `${data.tradeIndex + 1}/${data.totalTrades} (${progress}%)`;
+    }
+
+    updateTradeInfo(state) {
+        // Position
+        let positionText = 'FLAT';
+        if (state.position > 0) {
+            positionText = `LONG ${state.position}`;
+        } else if (state.position < 0) {
+            positionText = `SHORT ${Math.abs(state.position)}`;
+        }
+        this.elements.positionDisplay.textContent = positionText;
+
+        // Average entry price
+        if (state.avgEntryPrice > 0) {
+            this.elements.avgEntryDisplay.textContent = state.avgEntryPrice.toFixed(2);
+        } else {
+            this.elements.avgEntryDisplay.textContent = '--';
+        }
+
+        // P&L
+        this.elements.realizedPnL.textContent = this.formatPnL(state.realizedPnL);
+        this.elements.unrealizedPnL.textContent = this.formatPnL(state.unrealizedPnL);
+        this.elements.totalPnL.textContent = this.formatPnL(state.totalPnL);
+
+        // Color code total P&L
+        if (state.totalPnL > 0) {
+            this.elements.totalPnL.style.color = '#4caf50';
+        } else if (state.totalPnL < 0) {
+            this.elements.totalPnL.style.color = '#f44336';
+        } else {
+            this.elements.totalPnL.style.color = '#e0e0e0';
+        }
+    }
+
+    formatPnL(value) {
+        const sign = value >= 0 ? '+' : '';
+        return `${sign}$${value.toFixed(2)}`;
     }
 
     formatUTCDateTime(date) {
@@ -251,6 +380,7 @@ class TradeChartApp {
         this.elements.playBtn.disabled = false;
         this.elements.resetBtn.disabled = false;
         this.elements.speedControl.disabled = false;
+        this.elements.speedPresetBtns.forEach(btn => btn.disabled = false);
     }
 
     updateStatus(message) {
