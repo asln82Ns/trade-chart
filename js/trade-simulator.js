@@ -34,7 +34,7 @@ class TradeSimulator {
             type: type,
             quantity: quantity,
             timestamp: timestamp,
-            collectedTrades: [],
+            collectedTrades: [this.currentPrice],
             executed: false
         };
 
@@ -79,8 +79,7 @@ class TradeSimulator {
 
     executeOrder(order) {
         if (order.collectedTrades.length === 0) {
-            console.warn('No trades collected in slippage window, using order timestamp price');
-            // This shouldn't happen in normal playback, but handle edge case
+            console.error('CRITICAL ERROR: Order executed with no collected trades. This should not happen after the fix.');
             return;
         }
 
