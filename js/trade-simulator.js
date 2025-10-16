@@ -11,6 +11,8 @@ class TradeSimulator {
         this.slippageWindowMs = 200; // 200ms slippage window
         this.currentPrice = 0;
         this.onUpdateCallback = null;
+        this.completedTrades = []; // Log of all completed round-trip trades
+        this.currentEntryTime = 0; // Track entry time for current position
     }
 
     placeOrder(type, quantity, timestamp) {
@@ -108,6 +110,18 @@ class TradeSimulator {
             const closeQuantity = Math.min(quantity, Math.abs(this.position));
             const pnl = (this.avgEntryPrice - fillPrice) * closeQuantity * this.pointValue;
             this.realizedPnL += pnl;
+            
+            // Log completed trade
+            this.completedTrades.push({
+                direction: 'SHORT',
+                entryTime: this.currentEntryTime,
+                entryPrice: this.avgEntryPrice,
+                exitTime: Date.now(),
+                exitPrice: fillPrice,
+                quantity: closeQuantity,
+                pnl: pnl
+            });
+            
             this.position += closeQuantity;
             
             console.log(`Closed ${closeQuantity} short @ ${fillPrice.toFixed(2)}, Realized P&L: $${pnl.toFixed(2)}`);
@@ -117,14 +131,17 @@ class TradeSimulator {
                 const remainingQty = quantity - closeQuantity;
                 this.position = remainingQty;
                 this.avgEntryPrice = fillPrice;
+                this.currentEntryTime = Date.now();
                 console.log(`Opened ${remainingQty} long @ ${fillPrice.toFixed(2)}`);
             } else if (this.position === 0) {
                 this.avgEntryPrice = 0;
+                this.currentEntryTime = 0;
             }
         } else if (this.position === 0) {
             // Opening new long position
             this.position = quantity;
             this.avgEntryPrice = fillPrice;
+            this.currentEntryTime = Date.now();
             console.log(`Opened ${quantity} long @ ${fillPrice.toFixed(2)}`);
         } else {
             // Adding to existing long position - calculate weighted average
@@ -141,6 +158,18 @@ class TradeSimulator {
             const closeQuantity = Math.min(quantity, this.position);
             const pnl = (fillPrice - this.avgEntryPrice) * closeQuantity * this.pointValue;
             this.realizedPnL += pnl;
+            
+            // Log completed trade
+            this.completedTrades.push({
+                direction: 'LONG',
+                entryTime: this.currentEntryTime,
+                entryPrice: this.avgEntryPrice,
+                exitTime: Date.now(),
+                exitPrice: fillPrice,
+                quantity: closeQuantity,
+                pnl: pnl
+            });
+            
             this.position -= closeQuantity;
             
             console.log(`Closed ${closeQuantity} long @ ${fillPrice.toFixed(2)}, Realized P&L: $${pnl.toFixed(2)}`);
@@ -150,14 +179,17 @@ class TradeSimulator {
                 const remainingQty = quantity - closeQuantity;
                 this.position = -remainingQty;
                 this.avgEntryPrice = fillPrice;
+                this.currentEntryTime = Date.now();
                 console.log(`Opened ${remainingQty} short @ ${fillPrice.toFixed(2)}`);
             } else if (this.position === 0) {
                 this.avgEntryPrice = 0;
+                this.currentEntryTime = 0;
             }
         } else if (this.position === 0) {
             // Opening new short position
             this.position = -quantity;
             this.avgEntryPrice = fillPrice;
+            this.currentEntryTime = Date.now();
             console.log(`Opened ${quantity} short @ ${fillPrice.toFixed(2)}`);
         } else {
             // Adding to existing short position - calculate weighted average
@@ -207,6 +239,8 @@ class TradeSimulator {
         this.totalPnL = 0;
         this.currentPrice = 0;
         this.pendingOrders = [];
+        this.completedTrades = [];
+        this.currentEntryTime = 0;
         
         if (this.onUpdateCallback) {
             this.onUpdateCallback(this.getState());
@@ -222,6 +256,35 @@ class TradeSimulator {
     canPlaceOrder() {
         // Orders can be placed anytime during playback
         return true;
+    }
+
+    getCompletedTrades() {
+        return this.completedTrades;
+    }
+
+    getTradeStats() {
+        if (this.completedTrades.length === 0) {
+            return {
+                totalTrades: 0,
+                winningTrades: 0,
+                losingTrades: 0,
+                winRate: 0,
+                totalPnL: 0
+            };
+        }
+
+        const winningTrades = this.completedTrades.filter(t => t.pnl > 0).length;
+        const losingTrades = this.completedTrades.filter(t => t.pnl < 0).length;
+        const totalPnL = this.completedTrades.reduce((sum, t) => sum + t.pnl, 0);
+        const winRate = (winningTrades / this.completedTrades.length) * 100;
+
+        return {
+            totalTrades: this.completedTrades.length,
+            winningTrades: winningTrades,
+            losingTrades: losingTrades,
+            winRate: winRate,
+            totalPnL: totalPnL
+        };
     }
 }
 

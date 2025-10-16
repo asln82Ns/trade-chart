@@ -61,11 +61,16 @@ class TradeChartApp {
             buyBtn: document.getElementById('buyBtn'),
             sellBtn: document.getElementById('sellBtn'),
             quantityInput: document.getElementById('quantityInput'),
+            tradeLogBtn: document.getElementById('tradeLogBtn'),
             positionDisplay: document.getElementById('positionDisplay'),
             avgEntryDisplay: document.getElementById('avgEntryDisplay'),
             realizedPnL: document.getElementById('realizedPnL'),
             unrealizedPnL: document.getElementById('unrealizedPnL'),
-            totalPnL: document.getElementById('totalPnL')
+            totalPnL: document.getElementById('totalPnL'),
+            // Modal
+            tradeLogModal: document.getElementById('tradeLogModal'),
+            tradeLogContent: document.getElementById('tradeLogContent'),
+            closeModal: document.querySelector('.close-modal')
         };
 
         this.chartController = new ChartController(this.elements.chartContainer);
@@ -121,6 +126,15 @@ class TradeChartApp {
         // Trade controls
         this.elements.buyBtn.addEventListener('click', () => this.placeBuyOrder());
         this.elements.sellBtn.addEventListener('click', () => this.placeSellOrder());
+        this.elements.tradeLogBtn.addEventListener('click', () => this.showTradeLog());
+
+        // Modal controls
+        this.elements.closeModal.addEventListener('click', () => this.closeTradeLog());
+        window.addEventListener('click', (e) => {
+            if (e.target === this.elements.tradeLogModal) {
+                this.closeTradeLog();
+            }
+        });
     }
 
     async processCSV() {
@@ -385,6 +399,91 @@ class TradeChartApp {
 
     updateStatus(message) {
         this.elements.status.textContent = message;
+    }
+
+    showTradeLog() {
+        const trades = this.tradeSimulator.getCompletedTrades();
+        const stats = this.tradeSimulator.getTradeStats();
+
+        let html = '';
+
+        if (trades.length === 0) {
+            html = '<div class="empty-log">No completed trades yet. Place some trades to see them here!</div>';
+        } else {
+            html = '<table class="trade-log-table">';
+            html += '<thead><tr>';
+            html += '<th>#</th>';
+            html += '<th>Direction</th>';
+            html += '<th>Entry Time</th>';
+            html += '<th>Entry Price</th>';
+            html += '<th>Exit Time</th>';
+            html += '<th>Exit Price</th>';
+            html += '<th>Contracts</th>';
+            html += '<th>P&L</th>';
+            html += '</tr></thead>';
+            html += '<tbody>';
+
+            trades.forEach((trade, index) => {
+                const pnlClass = trade.pnl >= 0 ? 'trade-positive' : 'trade-negative';
+                const pnlSign = trade.pnl >= 0 ? '+' : '';
+                
+                html += '<tr>';
+                html += `<td>${index + 1}</td>`;
+                html += `<td>${trade.direction}</td>`;
+                html += `<td>${this.formatDateTime(new Date(trade.entryTime))}</td>`;
+                html += `<td>${trade.entryPrice.toFixed(2)}</td>`;
+                html += `<td>${this.formatDateTime(new Date(trade.exitTime))}</td>`;
+                html += `<td>${trade.exitPrice.toFixed(2)}</td>`;
+                html += `<td>${trade.quantity}</td>`;
+                html += `<td class="${pnlClass}">${pnlSign}${trade.pnl.toFixed(2)}</td>`;
+                html += '</tr>';
+            });
+
+            html += '</tbody></table>';
+
+            // Add stats
+            html += '<div class="trade-stats">';
+            html += '<div class="stat-item">';
+            html += '<span class="stat-label">Total Trades</span>';
+            html += `<span class="stat-value">${stats.totalTrades}</span>`;
+            html += '</div>';
+            html += '<div class="stat-item">';
+            html += '<span class="stat-label">Winning Trades</span>';
+            html += `<span class="stat-value" style="color: #4caf50">${stats.winningTrades}</span>`;
+            html += '</div>';
+            html += '<div class="stat-item">';
+            html += '<span class="stat-label">Losing Trades</span>';
+            html += `<span class="stat-value" style="color: #f44336">${stats.losingTrades}</span>`;
+            html += '</div>';
+            html += '<div class="stat-item">';
+            html += '<span class="stat-label">Win Rate</span>';
+            html += `<span class="stat-value">${stats.winRate.toFixed(1)}%</span>`;
+            html += '</div>';
+            html += '<div class="stat-item">';
+            html += '<span class="stat-label">Total P&L</span>';
+            const totalPnLClass = stats.totalPnL >= 0 ? '#4caf50' : '#f44336';
+            const totalPnLSign = stats.totalPnL >= 0 ? '+' : '';
+            html += `<span class="stat-value" style="color: ${totalPnLClass}">${totalPnLSign}${stats.totalPnL.toFixed(2)}</span>`;
+            html += '</div>';
+            html += '</div>';
+        }
+
+        this.elements.tradeLogContent.innerHTML = html;
+        this.elements.tradeLogModal.style.display = 'block';
+    }
+
+    closeTradeLog() {
+        this.elements.tradeLogModal.style.display = 'none';
+    }
+
+    formatDateTime(date) {
+        const year = date.getFullYear();
+        const month = String(date.getMonth() + 1).padStart(2, '0');
+        const day = String(date.getDate()).padStart(2, '0');
+        const hours = String(date.getHours()).padStart(2, '0');
+        const minutes = String(date.getMinutes()).padStart(2, '0');
+        const seconds = String(date.getSeconds()).padStart(2, '0');
+        return `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`;
     }
 }
 

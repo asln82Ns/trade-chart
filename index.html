@@ -54,6 +54,7 @@
                 <input type="number" id="quantityInput" min="1" value="1" step="1">
                 <button id="buyBtn" class="buy-btn" disabled>BUY</button>
                 <button id="sellBtn" class="sell-btn" disabled>SELL</button>
+                <button id="tradeLogBtn" class="trade-log-btn">Trade Log</button>
             </div>
 
             <!-- Trade Info Panel -->
@@ -114,6 +115,19 @@
         </div>
 
         <div id="chartContainer" class="chart-container"></div>
+    </div>
+
+    <!-- Trade Log Modal -->
+    <div id="tradeLogModal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2>Trade Log</h2>
+                <span class="close-modal">&times;</span>
+            </div>
+            <div class="modal-body">
+                <div id="tradeLogContent"></div>
+            </div>
+        </div>
     </div>
 
     <script type="module" src="js/main.js"></script>
