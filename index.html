@@ -41,7 +41,7 @@
 
             <div class="control-group">
                 <label for="speedControl">Speed (ticks/sec): <span id="speedValue">25</span></label>
-                <input type="range" id="speedControl" min="5" max="50" value="25" step="5" disabled>
+                <input type="range" id="speedControl" min="5" max="500" value="25" step="25" disabled>
             </div>
 
             <div class="info-panel">
@@ -50,8 +50,20 @@
                     <span id="currentTime">--</span>
                 </div>
                 <div class="info-item">
-                    <span class="info-label">Price:</span>
-                    <span id="currentPrice">--</span>
+                    <span class="info-label">Open:</span>
+                    <span id="currentOpen">--</span>
+                </div>
+                <div class="info-item">
+                    <span class="info-label">High:</span>
+                    <span id="currentHigh">--</span>
+                </div>
+                <div class="info-item">
+                    <span class="info-label">Low:</span>
+                    <span id="currentLow">--</span>
+                </div>
+                <div class="info-item">
+                    <span class="info-label">Close:</span>
+                    <span id="currentClose">--</span>
                 </div>
                 <div class="info-item">
                     <span class="info-label">Bar Progress:</span>

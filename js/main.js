@@ -47,7 +47,10 @@ class TradeChartApp {
             speedValue: document.getElementById('speedValue'),
             status: document.getElementById('status'),
             currentTime: document.getElementById('currentTime'),
-            currentPrice: document.getElementById('currentPrice'),
+            currentOpen: document.getElementById('currentOpen'),
+            currentHigh: document.getElementById('currentHigh'),
+            currentLow: document.getElementById('currentLow'),
+            currentClose: document.getElementById('currentClose'),
             barProgress: document.getElementById('barProgress'),
             loadedBars: document.getElementById('loadedBars'),
             chartContainer: document.getElementById('chartContainer')
@@ -58,6 +61,17 @@ class TradeChartApp {
 
         this.playbackEngine.onTick((data) => {
             this.updatePlaybackInfo(data);
+        });
+
+        // Setup hover callback to display OHLC on crosshair
+        this.chartController.setHoverCallback((data) => {
+            // Only update on hover when not playing (during playback, onTick updates these)
+            if (!this.playbackEngine.getCurrentState().isPlaying) {
+                this.elements.currentOpen.textContent = data.open.toFixed(2);
+                this.elements.currentHigh.textContent = data.high.toFixed(2);
+                this.elements.currentLow.textContent = data.low.toFixed(2);
+                this.elements.currentClose.textContent = data.close.toFixed(2);
+            }
         });
 
         this.elements.csvFile.addEventListener('change', (e) => {
@@ -149,7 +163,10 @@ class TradeChartApp {
 
             const barDuration = 5 * 60 * 1000;
             const startTime = targetTimestamp - (400 * barDuration);
-            const endTime = targetTimestamp + (200 * barDuration);
+            
+            // Load ALL remaining bars to end of dataset (instead of just 200)
+            const lastTimestamp = await this.dbManager.getMetadata('lastTimestamp');
+            const endTime = lastTimestamp;
 
             const bars = await this.dbManager.getBarsInRange(startTime, endTime);
 
@@ -194,7 +211,10 @@ class TradeChartApp {
         this.elements.pauseBtn.disabled = true;
         this.updateStatus('Reset');
         this.elements.currentTime.textContent = '--';
-        this.elements.currentPrice.textContent = '--';
+        this.elements.currentOpen.textContent = '--';
+        this.elements.currentHigh.textContent = '--';
+        this.elements.currentLow.textContent = '--';
+        this.elements.currentClose.textContent = '--';
         this.elements.barProgress.textContent = '--';
     }
 
@@ -202,7 +222,11 @@ class TradeChartApp {
         const date = new Date(data.bar.timestamp);
         this.elements.currentTime.textContent = this.formatUTCDateTime(date);
         
-        this.elements.currentPrice.textContent = data.trade.price.toFixed(2);
+        // Update OHLC prices
+        this.elements.currentOpen.textContent = data.bar.open.toFixed(2);
+        this.elements.currentHigh.textContent = data.bar.high.toFixed(2);
+        this.elements.currentLow.textContent = data.bar.low.toFixed(2);
+        this.elements.currentClose.textContent = data.bar.close.toFixed(2);
         
         const progress = ((data.tradeIndex + 1) / data.totalTrades * 100).toFixed(1);
         this.elements.barProgress.textContent = `${data.tradeIndex + 1}/${data.totalTrades} (${progress}%)`;

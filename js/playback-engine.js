@@ -48,7 +48,7 @@ class PlaybackEngine {
     }
 
     setSpeed(ticksPerSecond) {
-        this.ticksPerSecond = Math.max(5, Math.min(50, ticksPerSecond));
+        this.ticksPerSecond = Math.max(5, Math.min(500, ticksPerSecond));
     }
 
     play() {
@@ -58,9 +58,14 @@ class PlaybackEngine {
             return;
         }
         
-        this.currentBarIndex = 0;
-        this.currentTradeIndex = 0;
-        this.currentBar = null;
+        // Only reset if we've completed playback or haven't started
+        // This fixes the "Cannot update oldest data" error when resuming from pause
+        if (this.currentBarIndex >= this.replayBars.length) {
+            this.currentBarIndex = 0;
+            this.currentTradeIndex = 0;
+            this.currentBar = null;
+        }
+        // If paused mid-playback, continue from current position
         
         this.isPlaying = true;
         this.lastFrameTime = performance.now();

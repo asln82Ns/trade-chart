@@ -37,6 +37,18 @@ class ChartController {
             wickDownColor: '#ef5350',
         });
 
+        this.onHoverCallback = null;
+
+        // Subscribe to crosshair movement for hover OHLC display
+        this.chart.subscribeCrosshairMove((param) => {
+            if (param.time && param.seriesData.size > 0) {
+                const data = param.seriesData.get(this.candlestickSeries);
+                if (data && this.onHoverCallback) {
+                    this.onHoverCallback(data);
+                }
+            }
+        });
+
         window.addEventListener('resize', () => {
             this.chart.applyOptions({
                 width: container.clientWidth,
@@ -95,6 +107,10 @@ class ChartController {
             from: from / 1000,
             to: to / 1000
         });
+    }
+
+    setHoverCallback(callback) {
+        this.onHoverCallback = callback;
     }
 }
 
