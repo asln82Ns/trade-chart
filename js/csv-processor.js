@@ -102,13 +102,17 @@ class CSVProcessor {
         }
 
         const price = parseFloat(row.price);
-        if (isNaN(price)) {
+        if (isNaN(price) || price <= 0) {
             return;
         }
 
         // Extract additional fields (defaults for backward compatibility)
-        const size = parseFloat(row.size) || 1;
-        const side = row.side || 'U'; // U = Unknown for legacy data
+        const size = parseFloat(row.size);
+        if (isNaN(size) || size <= 0) {
+            return;
+        }
+        
+        const side = (row.side || 'U').trim().toUpperCase(); // U = Unknown for legacy data
 
         const barTimestamp = this.roundToFiveMinutes(datetime);
 
@@ -121,11 +125,13 @@ class CSVProcessor {
                 low: price,
                 close: price,
                 trades: [],
-                // NEW: Volume metrics
+                // Volume metrics
                 totalVolume: 0,
                 totalTrades: 0,
                 bidTrades: 0,
-                askTrades: 0
+                askTrades: 0,
+                bidVolume: 0,
+                askVolume: 0
             };
             this.bars.set(barTimestamp, bar);
         }
@@ -149,8 +155,10 @@ class CSVProcessor {
         
         if (side === 'B') {
             bar.bidTrades += 1;
+            bar.bidVolume += size;
         } else if (side === 'A') {
             bar.askTrades += 1;
+            bar.askVolume += size;
         }
     }
 

@@ -417,3 +417,12 @@ button:disabled {
 .ask-color {
     color: #f44336 !important;
 }
+
+.info-item-wide {
+    min-width: 280px;
+}
+
+.info-item-wide span:last-child {
+    font-size: 13px;
+    line-height: 1.4;
+}

@@ -101,7 +101,9 @@ class ChartController {
                 totalVolume: bar.totalVolume || 0,
                 totalTrades: bar.totalTrades || 0,
                 bidTrades: bar.bidTrades || 0,
-                askTrades: bar.askTrades || 0
+                askTrades: bar.askTrades || 0,
+                bidVolume: bar.bidVolume || 0,
+                askVolume: bar.askVolume || 0
             });
             
             return {
@@ -124,7 +126,9 @@ class ChartController {
             totalVolume: bar.totalVolume || 0,
             totalTrades: bar.totalTrades || 0,
             bidTrades: bar.bidTrades || 0,
-            askTrades: bar.askTrades || 0
+            askTrades: bar.askTrades || 0,
+            bidVolume: bar.bidVolume || 0,
+            askVolume: bar.askVolume || 0
         });
         
         this.candlestickSeries.update({

@@ -6,6 +6,7 @@ A lightweight, browser-based trading data visualizer with tick-by-tick replay an
 
 - **5-Minute OHLC Bars**: Automatically groups trade data into 5-minute bars
 - **Tick-by-Tick Replay**: Watch every price movement as it happened in real-time
+- **Volume Analytics**: Real-time bid/ask volume distribution with percentages
 - **Trade Simulation**: Place buy/sell market orders with realistic 200ms slippage
 - **Real-Time P&L**: Track realized and unrealized profit/loss as prices move
 - **Position Management**: Build and close positions with multiple entries
@@ -27,7 +28,7 @@ trade-chart/
 │   ├── csv-processor.js    
 │   ├── chart-controller.js 
 │   ├── playback-engine.js  
-│   └── trade-simulator.js  (NEW)
+│   └── trade-simulator.js
 ├── data.csv                
 └── README.md               
 ```
@@ -72,15 +73,17 @@ trade-chart/
 Your `data.csv` should have the following format:
 
 ```csv
-datetime,ticker,price,size,session_end_date,timestamp
-2025-06-01 22:00:00.068958624+00:00,NQM5,21303.75,30,2025-06-01,1748815200068958624
+ts_recv,ts_event,rtype,publisher_id,instrument_id,action,side,depth,price,size,flags,ts_in_delta,sequence,symbol
+2025-08-01 00:00:00.049882007+00:00,2025-08-01 00:00:00.049413979+00:00,0,1,42008487,T,A,0,23297.5,2,0,15959,211939573,NQU5
 ```
 
 **Required columns:**
-- `datetime`: UTC timestamp with timezone (ISO 8601 format)
+- `ts_recv`: UTC timestamp with timezone (ISO 8601 format)
 - `price`: Trade price (float)
+- `size`: Trade size/volume (integer)
+- `side`: 'B' for bid (buyer initiated), 'A' for ask (seller initiated)
 
-**Note**: Other columns (ticker, size, session_end_date, timestamp) are preserved but not currently used.
+**Note**: Other columns (ts_event, rtype, publisher_id, etc.) are preserved but not currently used.
 
 ## Usage
 
@@ -108,7 +111,26 @@ datetime,ticker,price,size,session_end_date,timestamp
 - **Reset**: Return to initial state (400 context bars visible, P&L reset)
 - **Speed Slider**: Adjust from 10 to 5,000 ticks per second
 
-### Trade Simulation (NEW)
+### Volume Analytics
+
+The info panel displays real-time volume metrics for each bar:
+
+- **Total Volume**: Sum of all trade sizes in the bar
+- **Total Trades**: Count of all ticks/trades in the bar
+- **Bid Trades**: `Count (% of trades) | Vol: Size (% of volume)` - Buyer-initiated trades
+- **Ask Trades**: `Count (% of trades) | Vol: Size (% of volume)` - Seller-initiated trades
+
+**Example Display:**
+```
+Bid Trades: 156 (61.2%) | Vol: 3,450 (68.5%)
+Ask Trades: 99 (38.8%) | Vol: 1,585 (31.5%)
+```
+
+This shows order flow imbalances - in this example, more buying pressure with larger buy sizes.
+
+**Hover over any bar** to view its volume metrics, or watch them update in real-time during playback.
+
+### Trade Simulation
 
 #### Placing Orders
 
@@ -188,8 +210,9 @@ Trade info panel shows:
 1. **CSV Parsing**: Uses PapaParse to stream large files
 2. **Bar Grouping**: Groups trades into 5-minute intervals based on UTC time
 3. **Trade Preservation**: Each bar stores array of individual trades with timestamps
-4. **Storage**: Saves processed bars to IndexedDB (~50MB for 6 months of data)
-5. **Retrieval**: Instant loading via indexed timestamp queries
+4. **Volume Tracking**: Aggregates bid/ask volume and trade counts per bar
+5. **Storage**: Saves processed bars to IndexedDB (~50MB for 6 months of data)
+6. **Retrieval**: Instant loading via indexed timestamp queries
 
 ### Memory Usage
 
@@ -232,7 +255,7 @@ All modern browsers with IndexedDB and ES6 module support.
 
 ### Progress bar stuck during processing
 - Check browser console for errors
-- Ensure CSV format matches expected format
+- Ensure CSV format matches expected format (ts_recv, price, size, side columns required)
 - Try a smaller sample file first
 
 ### Chart not displaying
@@ -249,24 +272,24 @@ All modern browsers with IndexedDB and ES6 module support.
 
 ```
 1. Load data: 2025-06-04 10:00:00
-2. Press Play
-3. Set Quantity: 5
-4. Click BUY when price looks good
+2. Press Play - watch volume metrics update in real-time
+3. Observe: Bid: 180 (65%) | Vol: 4,200 (72%) - strong buying pressure
+4. Set Quantity: 5
+5. Click BUY when volume confirms trend
    → Order placed at 21305.25
    → Fills at 21305.75 (worst price in 200ms)
    → Position: LONG 5 @ 21305.75
-5. Watch P&L update in real-time as price moves
-6. Price moves up to 21310.00
+6. Watch P&L update as price moves
+7. Price moves up to 21310.00
    → Unrealized P&L: +$425 [(21310 - 21305.75) × 5 × $20]
-7. Add to position: Click BUY, Quantity: 10
+8. Add to position: Click BUY, Quantity: 10
    → Fills at 21310.50
    → Position: LONG 15 @ 21308.67 (weighted avg)
-8. Price drops to 21302.00
-   → Total P&L: -$500 [(21302 - 21308.67) × 15 × $20]
-9. Close position: Click SELL, Quantity: 15
-   → Fills at 21301.75
-   → Realized P&L: -$515.75
-   → Position: FLAT
+9. Volume shifts: Ask: 200 (70%) | Vol: 5,800 (75%) - selling pressure
+10. Close position: Click SELL, Quantity: 15
+    → Fills at 21302.00
+    → Realized P&L: -$100
+    → Position: FLAT
 ```
 
 ## Future Enhancements
@@ -274,11 +297,12 @@ All modern browsers with IndexedDB and ES6 module support.
 - [ ] Stop-loss and take-profit orders
 - [ ] Limit orders with order book simulation
 - [ ] Multiple timeframes (1-min, 15-min, etc.)
-- [ ] Volume display
+- [ ] Volume profile display
 - [ ] Trade log/journal export
 - [ ] Position sizing calculator
 - [ ] Keyboard shortcuts for quick trading
 - [ ] Risk metrics (max drawdown, Sharpe ratio)
+- [ ] Delta analysis (cumulative bid/ask imbalance)
 
 ## Technology Stack
 
@@ -288,7 +312,7 @@ All modern browsers with IndexedDB and ES6 module support.
 - **Storage**: IndexedDB (native browser API)
 - **Server**: Any local web server (required for ES6 modules)
 
-**Total Code**: ~1,600 lines  
+**Total Code**: ~1,700 lines  
 **Dependencies**: 2 (both via CDN)  
 **Build Tools**: None  
 **Setup**: Start local server, open browser

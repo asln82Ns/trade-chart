@@ -101,11 +101,20 @@ class TradeChartApp {
                 this.elements.currentLow.textContent = data.low.toFixed(2);
                 this.elements.currentClose.textContent = data.close.toFixed(2);
                 
-                // NEW: Volume metrics
+                // Volume metrics with percentages
                 this.elements.totalVolume.textContent = data.totalVolume ? data.totalVolume.toLocaleString() : '--';
                 this.elements.totalTrades.textContent = data.totalTrades ? data.totalTrades.toLocaleString() : '--';
-                this.elements.bidTrades.textContent = data.bidTrades ? data.bidTrades.toLocaleString() : '--';
-                this.elements.askTrades.textContent = data.askTrades ? data.askTrades.toLocaleString() : '--';
+                
+                // Calculate percentages
+                const bidTradesPct = data.totalTrades > 0 ? ((data.bidTrades / data.totalTrades) * 100).toFixed(1) : 0;
+                const askTradesPct = data.totalTrades > 0 ? ((data.askTrades / data.totalTrades) * 100).toFixed(1) : 0;
+                const bidVolPct = data.totalVolume > 0 ? ((data.bidVolume / data.totalVolume) * 100).toFixed(1) : 0;
+                const askVolPct = data.totalVolume > 0 ? ((data.askVolume / data.totalVolume) * 100).toFixed(1) : 0;
+                
+                this.elements.bidTrades.textContent = data.bidTrades ? 
+                    `${data.bidTrades.toLocaleString()} (${bidTradesPct}%) | Vol: ${data.bidVolume.toLocaleString()} (${bidVolPct}%)` : '--';
+                this.elements.askTrades.textContent = data.askTrades ? 
+                    `${data.askTrades.toLocaleString()} (${askTradesPct}%) | Vol: ${data.askVolume.toLocaleString()} (${askVolPct}%)` : '--';
             }
         });
 
@@ -354,11 +363,18 @@ class TradeChartApp {
         this.elements.currentLow.textContent = data.bar.low.toFixed(2);
         this.elements.currentClose.textContent = data.bar.close.toFixed(2);
         
-        // NEW: Update volume metrics during playback
+        // Update volume metrics with percentages
         this.elements.totalVolume.textContent = data.bar.totalVolume.toLocaleString();
         this.elements.totalTrades.textContent = data.bar.totalTrades.toLocaleString();
-        this.elements.bidTrades.textContent = data.bar.bidTrades.toLocaleString();
-        this.elements.askTrades.textContent = data.bar.askTrades.toLocaleString();
+        
+        // Calculate percentages
+        const bidTradesPct = data.bar.totalTrades > 0 ? ((data.bar.bidTrades / data.bar.totalTrades) * 100).toFixed(1) : 0;
+        const askTradesPct = data.bar.totalTrades > 0 ? ((data.bar.askTrades / data.bar.totalTrades) * 100).toFixed(1) : 0;
+        const bidVolPct = data.bar.totalVolume > 0 ? ((data.bar.bidVolume / data.bar.totalVolume) * 100).toFixed(1) : 0;
+        const askVolPct = data.bar.totalVolume > 0 ? ((data.bar.askVolume / data.bar.totalVolume) * 100).toFixed(1) : 0;
+        
+        this.elements.bidTrades.textContent = `${data.bar.bidTrades.toLocaleString()} (${bidTradesPct}%) | Vol: ${data.bar.bidVolume.toLocaleString()} (${bidVolPct}%)`;
+        this.elements.askTrades.textContent = `${data.bar.askTrades.toLocaleString()} (${askTradesPct}%) | Vol: ${data.bar.askVolume.toLocaleString()} (${askVolPct}%)`;
         
         const progress = ((data.tradeIndex + 1) / data.totalTrades * 100).toFixed(1);
         this.elements.barProgress.textContent = `${data.tradeIndex + 1}/${data.totalTrades} (${progress}%)`;

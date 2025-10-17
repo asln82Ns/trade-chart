@@ -133,7 +133,9 @@ class PlaybackEngine {
                 totalVolume: 0,
                 totalTrades: 0,
                 bidTrades: 0,
-                askTrades: 0
+                askTrades: 0,
+                bidVolume: 0,
+                askVolume: 0
             };
         }
 
@@ -150,8 +152,10 @@ class PlaybackEngine {
             this.currentBarMetrics.totalTrades += 1;
             if (trade.side === 'B') {
                 this.currentBarMetrics.bidTrades += 1;
+                this.currentBarMetrics.bidVolume += trade.size || 0;
             } else if (trade.side === 'A') {
                 this.currentBarMetrics.askTrades += 1;
+                this.currentBarMetrics.askVolume += trade.size || 0;
             }
             
             // Update chart with OHLC + metadata
@@ -164,7 +168,9 @@ class PlaybackEngine {
                 totalVolume: this.currentBarMetrics.totalVolume,
                 totalTrades: this.currentBarMetrics.totalTrades,
                 bidTrades: this.currentBarMetrics.bidTrades,
-                askTrades: this.currentBarMetrics.askTrades
+                askTrades: this.currentBarMetrics.askTrades,
+                bidVolume: this.currentBarMetrics.bidVolume,
+                askVolume: this.currentBarMetrics.askVolume
             });
             
             // Send trade to simulator if available
