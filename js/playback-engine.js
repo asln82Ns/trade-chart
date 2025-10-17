@@ -1,4 +1,4 @@
-// Playback Engine - Handles tick-by-tick replay
+// Playback Engine - Handles tick-by-tick replay with volume tracking
 class PlaybackEngine {
     constructor(chartController, tradeSimulator = null) {
         this.chartController = chartController;
@@ -16,6 +16,9 @@ class PlaybackEngine {
         this.currentBar = null;
         this.onTickCallback = null;
         this.onBarCompleteCallback = null;
+        
+        // NEW: Track volume metrics during bar building
+        this.currentBarMetrics = null;
     }
 
     loadBars(bars) {
@@ -28,16 +31,10 @@ class PlaybackEngine {
         this.currentBarIndex = 0;
         this.currentTradeIndex = 0;
         this.currentBar = null;
+        this.currentBarMetrics = null;
         
-        const contextData = this.contextBars.map(bar => ({
-            time: bar.timestamp / 1000,
-            open: bar.open,
-            high: bar.high,
-            low: bar.low,
-            close: bar.close
-        }));
-        
-        this.chartController.setData(contextData);
+        // Pass full bar objects with metadata to chart controller
+        this.chartController.setData(this.contextBars);
         
         if (this.contextBars.length > 0) {
             const startIdx = Math.max(0, this.contextBars.length - 200);
@@ -65,6 +62,7 @@ class PlaybackEngine {
             this.currentBarIndex = 0;
             this.currentTradeIndex = 0;
             this.currentBar = null;
+            this.currentBarMetrics = null;
         }
         // If paused mid-playback, continue from current position
         
@@ -87,16 +85,9 @@ class PlaybackEngine {
         this.currentBarIndex = 0;
         this.currentTradeIndex = 0;
         this.currentBar = null;
+        this.currentBarMetrics = null;
         
-        const contextData = this.contextBars.map(bar => ({
-            time: bar.timestamp / 1000,
-            open: bar.open,
-            high: bar.high,
-            low: bar.low,
-            close: bar.close
-        }));
-        
-        this.chartController.setData(contextData);
+        this.chartController.setData(this.contextBars);
     }
 
     animate() {
@@ -127,6 +118,7 @@ class PlaybackEngine {
 
         const bar = this.replayBars[this.currentBarIndex];
         
+        // Initialize current bar and metrics on first tick
         if (this.currentBar === null || this.currentBar.timestamp !== bar.timestamp) {
             this.currentBar = {
                 timestamp: bar.timestamp,
@@ -135,21 +127,44 @@ class PlaybackEngine {
                 low: bar.open,
                 close: bar.open
             };
+            
+            // NEW: Initialize volume metrics for this bar
+            this.currentBarMetrics = {
+                totalVolume: 0,
+                totalTrades: 0,
+                bidTrades: 0,
+                askTrades: 0
+            };
         }
 
         if (this.currentTradeIndex < bar.trades.length) {
             const trade = bar.trades[this.currentTradeIndex];
             
+            // Update OHLC
             this.currentBar.high = Math.max(this.currentBar.high, trade.price);
             this.currentBar.low = Math.min(this.currentBar.low, trade.price);
             this.currentBar.close = trade.price;
             
+            // NEW: Update volume metrics as bar builds
+            this.currentBarMetrics.totalVolume += trade.size || 0;
+            this.currentBarMetrics.totalTrades += 1;
+            if (trade.side === 'B') {
+                this.currentBarMetrics.bidTrades += 1;
+            } else if (trade.side === 'A') {
+                this.currentBarMetrics.askTrades += 1;
+            }
+            
+            // Update chart with OHLC + metadata
             this.chartController.updateBar({
                 time: this.currentBar.timestamp / 1000,
                 open: this.currentBar.open,
                 high: this.currentBar.high,
                 low: this.currentBar.low,
-                close: this.currentBar.close
+                close: this.currentBar.close,
+                totalVolume: this.currentBarMetrics.totalVolume,
+                totalTrades: this.currentBarMetrics.totalTrades,
+                bidTrades: this.currentBarMetrics.bidTrades,
+                askTrades: this.currentBarMetrics.askTrades
             });
             
             // Send trade to simulator if available
@@ -157,9 +172,13 @@ class PlaybackEngine {
                 this.tradeSimulator.processTick(trade);
             }
             
+            // NEW: Pass complete bar with metrics to callback
             if (this.onTickCallback) {
                 this.onTickCallback({
-                    bar: this.currentBar,
+                    bar: {
+                        ...this.currentBar,
+                        ...this.currentBarMetrics
+                    },
                     trade: trade,
                     barIndex: this.currentBarIndex,
                     tradeIndex: this.currentTradeIndex,
@@ -172,12 +191,16 @@ class PlaybackEngine {
 
         if (this.currentTradeIndex >= bar.trades.length) {
             if (this.onBarCompleteCallback) {
-                this.onBarCompleteCallback(this.currentBar);
+                this.onBarCompleteCallback({
+                    ...this.currentBar,
+                    ...this.currentBarMetrics
+                });
             }
             
             this.currentBarIndex++;
             this.currentTradeIndex = 0;
             this.currentBar = null;
+            this.currentBarMetrics = null;
         }
 
         return true;

@@ -1,4 +1,4 @@
-// CSV Processor - Parses CSV and groups trades into 5-minute bars
+// CSV Processor - Parses CSV and groups trades into 5-minute bars with volume metrics
 class CSVProcessor {
     constructor(dbManager) {
         this.dbManager = dbManager;
@@ -79,14 +79,25 @@ class CSVProcessor {
     }
 
     processRow(row) {
-        let datetimeStr = row.datetime;
+        // Support both formats: 
+        // Raw format: ts_recv, price, size, side
+        // Legacy format: datetime, price
+        let datetimeStr = row.ts_recv || row.datetime;
         
+        // Check for missing, empty, or invalid datetime
+        if (!datetimeStr || datetimeStr.trim() === '') {
+            // Skip silently (likely header row or empty row)
+            return;
+        }
+        
+        // Ensure it's a string before calling replace
+        datetimeStr = String(datetimeStr).trim();
         datetimeStr = datetimeStr.replace(' ', 'T');
         datetimeStr = datetimeStr.replace(/\.(\d{3})\d+/, '.$1');
         
         const datetime = new Date(datetimeStr);
         if (isNaN(datetime.getTime())) {
-            console.warn('Invalid date format:', row.datetime);
+            console.warn('Invalid date format:', datetimeStr);
             return;
         }
 
@@ -94,6 +105,10 @@ class CSVProcessor {
         if (isNaN(price)) {
             return;
         }
+
+        // Extract additional fields (defaults for backward compatibility)
+        const size = parseFloat(row.size) || 1;
+        const side = row.side || 'U'; // U = Unknown for legacy data
 
         const barTimestamp = this.roundToFiveMinutes(datetime);
 
@@ -105,19 +120,38 @@ class CSVProcessor {
                 high: price,
                 low: price,
                 close: price,
-                trades: []
+                trades: [],
+                // NEW: Volume metrics
+                totalVolume: 0,
+                totalTrades: 0,
+                bidTrades: 0,
+                askTrades: 0
             };
             this.bars.set(barTimestamp, bar);
         }
 
+        // Update OHLC
         bar.high = Math.max(bar.high, price);
         bar.low = Math.min(bar.low, price);
         bar.close = price;
 
+        // Store trade with additional metadata
         bar.trades.push({
             time: datetime.getTime(),
-            price: price
+            price: price,
+            size: size,
+            side: side
         });
+
+        // Update volume metrics
+        bar.totalVolume += size;
+        bar.totalTrades += 1;
+        
+        if (side === 'B') {
+            bar.bidTrades += 1;
+        } else if (side === 'A') {
+            bar.askTrades += 1;
+        }
     }
 
     sortBarTrades() {

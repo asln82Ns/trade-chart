@@ -1,4 +1,4 @@
-// Chart Controller - Manages Lightweight Charts instance
+// Chart Controller - Manages Lightweight Charts instance with metadata access
 class ChartController {
     constructor(container) {
         this.chart = LightweightCharts.createChart(container, {
@@ -37,14 +37,31 @@ class ChartController {
             wickDownColor: '#ef5350',
         });
 
+        // Store bar metadata for hover access
+        this.barMetadata = new Map(); // key: timestamp, value: {totalVolume, totalTrades, bidTrades, askTrades}
+        
         this.onHoverCallback = null;
 
-        // Subscribe to crosshair movement for hover OHLC display
+        // Subscribe to crosshair movement for hover OHLC + metadata display
         this.chart.subscribeCrosshairMove((param) => {
             if (param.time && param.seriesData.size > 0) {
                 const data = param.seriesData.get(this.candlestickSeries);
                 if (data && this.onHoverCallback) {
-                    this.onHoverCallback(data);
+                    // Get metadata for this bar
+                    const timestamp = param.time * 1000; // Convert back to ms
+                    const metadata = this.barMetadata.get(timestamp) || {
+                        totalVolume: 0,
+                        totalTrades: 0,
+                        bidTrades: 0,
+                        askTrades: 0
+                    };
+                    
+                    // Pass both OHLC and metadata
+                    this.onHoverCallback({
+                        ...data,
+                        timestamp: timestamp,
+                        ...metadata
+                    });
                 }
             }
         });
@@ -73,18 +90,43 @@ class ChartController {
     }
 
     setData(bars) {
-        const data = bars.map(bar => ({
-            time: bar.time || bar.timestamp / 1000,
-            open: bar.open,
-            high: bar.high,
-            low: bar.low,
-            close: bar.close
-        }));
+        // Clear existing metadata
+        this.barMetadata.clear();
+        
+        const data = bars.map(bar => {
+            const timestamp = bar.time || bar.timestamp / 1000;
+            
+            // Store metadata
+            this.barMetadata.set(timestamp * 1000, {
+                totalVolume: bar.totalVolume || 0,
+                totalTrades: bar.totalTrades || 0,
+                bidTrades: bar.bidTrades || 0,
+                askTrades: bar.askTrades || 0
+            });
+            
+            return {
+                time: timestamp,
+                open: bar.open,
+                high: bar.high,
+                low: bar.low,
+                close: bar.close
+            };
+        });
 
         this.candlestickSeries.setData(data);
     }
 
     updateBar(bar) {
+        const timestamp = bar.time * 1000;
+        
+        // Update metadata
+        this.barMetadata.set(timestamp, {
+            totalVolume: bar.totalVolume || 0,
+            totalTrades: bar.totalTrades || 0,
+            bidTrades: bar.bidTrades || 0,
+            askTrades: bar.askTrades || 0
+        });
+        
         this.candlestickSeries.update({
             time: bar.time,
             open: bar.open,
@@ -111,6 +153,10 @@ class ChartController {
 
     setHoverCallback(callback) {
         this.onHoverCallback = callback;
+    }
+
+    clearMetadata() {
+        this.barMetadata.clear();
     }
 }
 

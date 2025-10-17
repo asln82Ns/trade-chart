@@ -409,3 +409,11 @@ button:disabled {
     color: #888;
     font-size: 14px;
 }
+
+.bid-color {
+    color: #4caf50 !important;
+}
+
+.ask-color {
+    color: #f44336 !important;
+}

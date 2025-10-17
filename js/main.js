@@ -70,7 +70,12 @@ class TradeChartApp {
             // Modal
             tradeLogModal: document.getElementById('tradeLogModal'),
             tradeLogContent: document.getElementById('tradeLogContent'),
-            closeModal: document.querySelector('.close-modal')
+            closeModal: document.querySelector('.close-modal'),
+            // NEW: Volume metric elements
+            totalVolume: document.getElementById('totalVolume'),
+            totalTrades: document.getElementById('totalTrades'),
+            bidTrades: document.getElementById('bidTrades'),
+            askTrades: document.getElementById('askTrades'),
         };
 
         this.chartController = new ChartController(this.elements.chartContainer);
@@ -90,10 +95,17 @@ class TradeChartApp {
         this.chartController.setHoverCallback((data) => {
             // Only update on hover when not playing (during playback, onTick updates these)
             if (!this.playbackEngine.getCurrentState().isPlaying) {
+                // OHLC
                 this.elements.currentOpen.textContent = data.open.toFixed(2);
                 this.elements.currentHigh.textContent = data.high.toFixed(2);
                 this.elements.currentLow.textContent = data.low.toFixed(2);
                 this.elements.currentClose.textContent = data.close.toFixed(2);
+                
+                // NEW: Volume metrics
+                this.elements.totalVolume.textContent = data.totalVolume ? data.totalVolume.toLocaleString() : '--';
+                this.elements.totalTrades.textContent = data.totalTrades ? data.totalTrades.toLocaleString() : '--';
+                this.elements.bidTrades.textContent = data.bidTrades ? data.bidTrades.toLocaleString() : '--';
+                this.elements.askTrades.textContent = data.askTrades ? data.askTrades.toLocaleString() : '--';
             }
         });
 
@@ -266,12 +278,20 @@ class TradeChartApp {
         this.elements.buyBtn.disabled = true;
         this.elements.sellBtn.disabled = true;
         this.updateStatus('Reset');
+        
+        // Clear all display fields
         this.elements.currentTime.textContent = '--';
         this.elements.currentOpen.textContent = '--';
         this.elements.currentHigh.textContent = '--';
         this.elements.currentLow.textContent = '--';
         this.elements.currentClose.textContent = '--';
         this.elements.barProgress.textContent = '--';
+        
+        // NEW: Clear volume metrics
+        this.elements.totalVolume.textContent = '--';
+        this.elements.totalTrades.textContent = '--';
+        this.elements.bidTrades.textContent = '--';
+        this.elements.askTrades.textContent = '--';
     }
 
     placeBuyOrder() {
@@ -333,6 +353,12 @@ class TradeChartApp {
         this.elements.currentHigh.textContent = data.bar.high.toFixed(2);
         this.elements.currentLow.textContent = data.bar.low.toFixed(2);
         this.elements.currentClose.textContent = data.bar.close.toFixed(2);
+        
+        // NEW: Update volume metrics during playback
+        this.elements.totalVolume.textContent = data.bar.totalVolume.toLocaleString();
+        this.elements.totalTrades.textContent = data.bar.totalTrades.toLocaleString();
+        this.elements.bidTrades.textContent = data.bar.bidTrades.toLocaleString();
+        this.elements.askTrades.textContent = data.bar.askTrades.toLocaleString();
         
         const progress = ((data.tradeIndex + 1) / data.totalTrades * 100).toFixed(1);
         this.elements.barProgress.textContent = `${data.tradeIndex + 1}/${data.totalTrades} (${progress}%)`;
