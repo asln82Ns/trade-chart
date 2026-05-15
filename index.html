@@ -6,135 +6,193 @@
     <title>Trade Chart</title>
     <link rel="stylesheet" href="css/styles.css">
     <script src="https://unpkg.com/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
 </head>
 <body>
+    <div id="alertNotifications" class="alert-notifications"></div>
     <div class="container">
         <header>
             <h1>Trade Chart</h1>
-            <div class="status" id="status">Ready</div>
+            <div class="status" id="status">Connecting to server...</div>
+            <div class="warmup-pill" id="warmupPill" hidden></div>
         </header>
 
         <div class="controls">
-            <div class="control-group">
-                <label for="csvFile">Load CSV:</label>
-                <input type="file" id="csvFile" accept=".csv">
-                <button id="processBtn" disabled>Process Data</button>
-                <div id="processProgress" class="progress-bar" style="display: none;">
-                    <div id="progressFill" class="progress-fill"></div>
-                    <span id="progressText">0%</span>
-                </div>
+            <div class="control-group mode-row">
+                <label>Mode:</label>
+                <button class="mode-btn active" id="modeReplayBtn" data-mode="replay">Replay</button>
+                <button class="mode-btn" id="modeLiveBtn" data-mode="live">Live</button>
+                <button id="weatherToggleBtn" class="weather-toggle-btn" title="Toggle weather panel (HDD/CDD per region, basin freeze risk, polar vortex). See docs/weather-data-spec.md.">Weather: Off</button>
+                <button id="rankCompareBtn" class="rank-compare-btn" title="Toggle the rank-compare panel: shows Vol rank, Range rank, and open-to-close (in ticks) for every other asset at the current timeframe and playback position. Replay only.">Rank Compare: Off</button>
+
+                <span id="alertsSection" class="alerts-section" style="display:none;">
+                    <span class="alerts-divider">|</span>
+                    <label>Alert:</label>
+                    <select id="alertAsset" title="Asset to monitor"></select>
+                    <select id="alertMetric" title="Rank metric">
+                        <option value="vol_pending">Vol Pending</option>
+                        <option value="vol">Vol Rank</option>
+                        <option value="range_pending">Range Pending</option>
+                        <option value="range">Range Rank</option>
+                    </select>
+                    <select id="alertOp" title="Comparison operator">
+                        <option value=">=">&ge;</option>
+                        <option value="<=">&le;</option>
+                    </select>
+                    <input type="number" id="alertThreshold" min="0" max="100" step="1" value="80" title="Threshold (0-100%)">
+                    <span class="alerts-percent">%</span>
+                    <select id="alertTimeframe" title="Timeframe"></select>
+                    <button id="alertSaveBtn">Add Alert</button>
+                    <button id="alertClearBtn" title="Remove every registered alert">Clear All</button>
+                    <label class="alert-mute" title="Silence the beep for Vol Rank / Range Rank alerts (banner still shows)">
+                        <input type="checkbox" id="muteRankAlerts">Mute Rank
+                    </label>
+                    <label class="alert-mute" title="Silence the beep for Vol Pending / Range Pending alerts (banner still shows)">
+                        <input type="checkbox" id="mutePendingAlerts">Mute Pending
+                    </label>
+                    <span id="alertList" class="alert-list"></span>
+                </span>
             </div>
 
             <div class="control-group">
-                <label for="jumpTime">Jump to Time (UTC):</label>
-                <input type="datetime-local" id="jumpTime" step="1" placeholder="Enter UTC time">
-                <button id="jumpBtn" disabled>Load</button>
-                <span style="font-size: 12px; color: #888;">Enter time in UTC timezone</span>
+                <label for="assetSelect">Asset:</label>
+                <select id="assetSelect" disabled></select>
+
+                <label for="entryDate" id="entryDateLabel">Entry (ET):</label>
+                <input type="datetime-local" id="entryDate" step="60" disabled>
+
+                <label for="timeframeSelect">Timeframe:</label>
+                <select id="timeframeSelect" disabled></select>
+
+                <label for="lookbackInput" title="Calendar days of history used to build percentile-rank distributions and within-bar profiles. Range 30–1095 days. First load takes ~1 min per 100 days from cold cache; subsequent loads are instant.">Lookback (days):</label>
+                <input type="number" id="lookbackInput" min="30" max="1095" value="365" step="1"
+                       title="30–1095 calendar days. Tooltip in rank info icons shows actual session count (n).">
+
+                <label for="resumeSessionSelect" id="resumeLabel" title="Pick a previously-saved replay session. Selecting one fills the Asset, Entry, and Timeframe fields above — then click Load. Sessions are keyed by (asset, entry date) and persist in your browser.">Resume:</label>
+                <select id="resumeSessionSelect" title="Saved replay sessions, newest-saved first.">
+                    <option value="">— select session —</option>
+                </select>
+
+                <button id="loadBtn" disabled>Load</button>
+                <button id="connectBtn" style="display:none;" disabled>Connect</button>
+                <button id="disconnectBtn" style="display:none;" disabled>Disconnect</button>
+
+                <button id="ghostBtn" class="ghost-btn" title="Overlay median historical bar shape for each ET time-of-day bucket (replay only)." disabled>Ghost: Off</button>
+                <span id="ghostConfigGroup" class="ghost-config" hidden>
+                    <label class="ghost-label">Pct:</label>
+                    <select id="ghostPercentile" title="Which percentile of body / wicks / volume to render. 50 = median.">
+                        <option value="1">1</option>
+                        <option value="10">10</option>
+                        <option value="50" selected>50</option>
+                        <option value="75">75</option>
+                        <option value="90">90</option>
+                    </select>
+                    <label class="ghost-label">DoW:</label>
+                    <select id="ghostDow" title="Restrict the lookback to sessions whose day-of-week matches.">
+                        <option value="">Any</option>
+                        <option value="0">Mon</option>
+                        <option value="1">Tue</option>
+                        <option value="2">Wed</option>
+                        <option value="3">Thu</option>
+                        <option value="4">Fri</option>
+                    </select>
+                    <label class="ghost-label">WoM:</label>
+                    <select id="ghostWom" title="Restrict the lookback to sessions whose week-of-month matches (1=days 1-7, 2=8-14, …).">
+                        <option value="">Any</option>
+                        <option value="1">1</option>
+                        <option value="2">2</option>
+                        <option value="3">3</option>
+                        <option value="4">4</option>
+                        <option value="5">5</option>
+                    </select>
+                    <label class="ghost-label">Anchor:</label>
+                    <select id="ghostAnchor" title="Session: re-anchor each ghost chain at 18:00 ET, drift within session. Realtime: anchor each past ghost to the prior real bar's close; future ghosts chain from the cursor.">
+                        <option value="session" selected>Session</option>
+                        <option value="realtime">Realtime</option>
+                    </select>
+                </span>
             </div>
 
-            <div class="control-group">
-                <button id="playBtn" disabled>Play</button>
-                <button id="pauseBtn" disabled>Pause</button>
-                <button id="resetBtn" disabled>Reset</button>
-            </div>
-
-            <div class="control-group">
-                <label for="speedControl">Speed (ticks/sec): <span id="speedValue">100</span></label>
-                <input type="range" id="speedControl" min="10" max="5000" value="100" step="10" disabled>
-                <button class="speed-preset-btn" data-speed="10" disabled>10</button>
-                <button class="speed-preset-btn" data-speed="100" disabled>100</button>
-                <button class="speed-preset-btn" data-speed="300" disabled>300</button>
-                <button class="speed-preset-btn" data-speed="5000" disabled>5000</button>
-            </div>
-
-            <!-- Trade Controls -->
-            <div class="control-group trade-controls">
-                <label for="quantityInput">Quantity:</label>
-                <input type="number" id="quantityInput" min="1" value="1" step="1">
-                <button id="buyBtn" class="buy-btn" disabled>BUY</button>
-                <button id="sellBtn" class="sell-btn" disabled>SELL</button>
-                <button id="tradeLogBtn" class="trade-log-btn">Trade Log</button>
-            </div>
-
-            <!-- Trade Info Panel -->
             <div class="info-panel trade-info-panel">
-                <div class="info-item">
-                    <span class="info-label">Position:</span>
-                    <span id="positionDisplay" class="position-text">FLAT</span>
-                </div>
-                <div class="info-item">
-                    <span class="info-label">Avg Entry:</span>
-                    <span id="avgEntryDisplay">--</span>
-                </div>
-                <div class="info-item">
-                    <span class="info-label">Realized P&L:</span>
-                    <span id="realizedPnL">+$0.00</span>
-                </div>
-                <div class="info-item">
-                    <span class="info-label">Unrealized P&L:</span>
-                    <span id="unrealizedPnL">+$0.00</span>
-                </div>
-                <div class="info-item">
-                    <span class="info-label">Total P&L:</span>
-                    <span id="totalPnL" class="total-pnl">+$0.00</span>
-                </div>
+                <div class="info-item"><span class="info-label">Position:</span> <span id="positionDisplay" class="position-text">FLAT</span></div>
+                <div class="info-item"><span class="info-label">Avg Entry:</span> <span id="avgEntryDisplay">--</span></div>
+                <div class="info-item"><span class="info-label">Realized P&L:</span> <span id="realizedPnL">+$0.00</span></div>
+                <div class="info-item"><span class="info-label">Unrealized P&L:</span> <span id="unrealizedPnL">+$0.00</span></div>
+                <div class="info-item"><span class="info-label">Total P&L:</span> <span id="totalPnL" class="total-pnl">+$0.00</span></div>
             </div>
 
-            <!-- Existing Info Panel -->
             <div class="info-panel">
-                <div class="info-item">
-                    <span class="info-label">Current Time:</span>
-                    <span id="currentTime">--</span>
-                </div>
-                <div class="info-item">
-                    <span class="info-label">Open:</span>
-                    <span id="currentOpen">--</span>
-                </div>
-                <div class="info-item">
-                    <span class="info-label">High:</span>
-                    <span id="currentHigh">--</span>
-                </div>
-                <div class="info-item">
-                    <span class="info-label">Low:</span>
-                    <span id="currentLow">--</span>
-                </div>
-                <div class="info-item">
-                    <span class="info-label">Close:</span>
-                    <span id="currentClose">--</span>
-                </div>
-                <div class="info-item">
-                    <span class="info-label">Total Volume:</span>
-                    <span id="totalVolume">--</span>
-                </div>
-                <div class="info-item">
-                    <span class="info-label">Total Trades:</span>
-                    <span id="totalTrades">--</span>
-                </div>
-                <div class="info-item">
-                    <span class="info-label">Bid Trades:</span>
-                    <span id="bidTrades" class="bid-color">--</span>
-                </div>
-                <div class="info-item">
-                    <span class="info-label">Ask Trades:</span>
-                    <span id="askTrades" class="ask-color">--</span>
-                </div>
-                <div class="info-item">
-                    <span class="info-label">Bar Progress:</span>
-                    <span id="barProgress">--</span>
+                <div class="info-item"><span class="info-label">Time (ET):</span> <span id="currentTime">--</span></div>
+                <div class="info-item"><span class="info-label">Contract:</span> <span id="currentContract">--</span></div>
+                <div class="info-item"><span class="info-label">Open:</span> <span id="currentOpen">--</span></div>
+                <div class="info-item"><span class="info-label">High:</span> <span id="currentHigh">--</span></div>
+                <div class="info-item"><span class="info-label">Low:</span> <span id="currentLow">--</span></div>
+                <div class="info-item"><span class="info-label">Close:</span> <span id="currentClose">--</span></div>
+                <div class="info-item"><span class="info-label">Bar Volume:</span> <span id="barVolume">--</span></div>
+                <div class="info-item"><span class="info-label">Vol Rank <abbr id="volRankInfo" title="Percentile rank of this bar's volume vs same time-of-day bars over the lookback window (higher = heavier than typical). Bar's current cumulative value if still forming.">ⓘ</abbr></span> <span id="volRank">--</span> <span class="rank-idx" id="volRankIdx">--</span></div>
+                <div class="info-item"><span class="info-label">Vol Pending <abbr id="volPendingInfo" title="Estimated final volume rank using the empirical fractional-volume profile: estimate = current / f(elapsed_fraction). Shrunk toward historical median in the first 10% of bar.">ⓘ</abbr></span> <span id="volPendingRank">--</span> <span class="rank-idx" id="volPendingRankIdx">--</span></div>
+                <div class="info-item"><span class="info-label">Range Rank <abbr id="rangeRankInfo" title="Percentile rank of this bar's high - low vs same time-of-day bars over the lookback window. Bar's current cumulative range if still forming.">ⓘ</abbr></span> <span id="rangeRank">--</span> <span class="rank-idx" id="rangeRankIdx">--</span></div>
+                <div class="info-item"><span class="info-label">Range Pending <abbr id="rangePendingInfo" title="Estimated final range rank using the empirical fractional-range profile. Shrunk toward historical median in the first 10% of bar.">ⓘ</abbr></span> <span id="rangePendingRank">--</span> <span class="rank-idx" id="rangePendingRankIdx">--</span></div>
+                <div class="info-item ghost-info-item" id="ghostInfoItem" hidden><span class="info-label">Ghost <abbr title="Median historical bar shape for this ET time-of-day bucket across the lookback. Shown as % blue (close>open) / % gray (close<open), excluding doji from the percentage. n = total bars in the bucket.">ⓘ</abbr></span> <span id="ghostInfo">--</span></div>
+                <div class="playback-controls-inline">
+                    <button id="playBtn" disabled>Play</button>
+                    <button id="pauseBtn" disabled>Pause</button>
+                    <button id="resetBtn" disabled>Reset</button>
+                    <label for="speedControl">Speed:</label>
+                    <input type="number" id="speedControl" min="1" max="5000" value="60" step="1" disabled>
+                    <span class="speed-preset" title="Edit number to change preset; click → to apply.">
+                        <input type="number" class="speed-preset-value" min="1" max="5000" step="1" value="1">
+                        <button class="speed-preset-apply" disabled>&rarr;</button>
+                    </span>
+                    <span class="speed-preset" title="Edit number to change preset; click → to apply.">
+                        <input type="number" class="speed-preset-value" min="1" max="5000" step="1" value="60">
+                        <button class="speed-preset-apply" disabled>&rarr;</button>
+                    </span>
+                    <span class="speed-preset" title="Edit number to change preset; click → to apply.">
+                        <input type="number" class="speed-preset-value" min="1" max="5000" step="1" value="300">
+                        <button class="speed-preset-apply" disabled>&rarr;</button>
+                    </span>
+                    <span class="speed-preset" title="Edit number to change preset; click → to apply.">
+                        <input type="number" class="speed-preset-value" min="1" max="5000" step="1" value="3000">
+                        <button class="speed-preset-apply" disabled>&rarr;</button>
+                    </span>
                 </div>
                 <div style="flex-basis: 100%; height: 0;"></div>
-                <div class="info-item">
-                    <span class="info-label">Loaded Bars:</span>
-                    <span id="loadedBars">0</span>
+                <div class="info-item"><span class="info-label">Loaded Sessions:</span> <span id="loadedSessions">0</span></div>
+                <div class="info-item"><span class="info-label">Tape:</span> <span id="tapePos">0 / 0</span></div>
+                <div class="info-item"><span class="info-label">Tick (ET):</span> <span id="tickTime">--</span></div>
+                <div class="info-item"><span class="info-label">Prefetch:</span> <span id="prefetchStatus">idle</span></div>
+                <div class="trade-controls-inline">
+                    <label for="quantityInput">Qty:</label>
+                    <input type="number" id="quantityInput" min="0.1" value="1" step="0.1" title="Position size. Step set per-asset (0.1 where a 1/10 micro exists, 0.2 for SI, 1 for HO/PL/6N/MBT).">
+                    <label for="riskTargetInput" title="Maximum dollar risk per trade. Qty auto-calculates as floor(target ÷ Risk).">$ Target:</label>
+                    <input type="number" id="riskTargetInput" min="0" step="any" placeholder="e.g. 200" title="Enter a max-dollar-risk target; Qty auto-updates each tick. Leave blank for manual qty.">
+                    <label class="risk-auto-toggle" title="When checked, Qty auto-updates from $ Target on every tick / hover. Uncheck to freeze Qty at its current value (useful when you've dialed in a size and don't want it to drift with the next bar).">
+                        <input type="checkbox" id="riskTargetEnable" checked>auto
+                    </label>
+                    <label for="distPctInput" title="Percentage of (high − close) for red bars or (close − low) for green bars to use as the risk distance. 100 = full bar; 50 = half; 125 = 1.25× extended. Scaled tick count = ceil(baseTicks × pct ÷ 100), so the distance always rounds up to the next whole tick.">Dist %:</label>
+                    <input type="number" id="distPctInput" class="dist-pct-input" min="1" max="500" value="100" step="1" title="Distance percentage applied to the base close-to-extreme distance.">
+                    <span id="tickValueDisplay" class="tick-value-display" title="Dollar value of one tick = tick_size × point_value">--/tick</span>
+                    <span id="dollarRiskDisplay" class="dollar-risk-display" title="Dollar Risk: scaled distance × point_value. Scaled distance = ceil(baseTicks × Dist% ÷ 100) × tick_size, where baseTicks = (high − close)/tick_size for red bars and (close − low)/tick_size for green bars.">Risk: --</span>
+                    <span id="advPriceDisplay" class="adv-price-display" title="Adverse-side price implied by the scaled distance: close + ticks (red bar) or close − ticks (green bar). Shows '--' when the bar has zero ticks of adverse distance (close == high on red, close == low on green).">@ --</span>
+                    <span id="addQuantityDisplay" class="add-qty-display" title="Add Quantity: view-only sizing for adding to position. Computes qty as floor($ Target ÷ (addDistance × point_value) ÷ qty_increment) × qty_increment, where addDistance = adverse − low (red bar) or high − adverse (green bar). At 100% Dist%, adverse equals the close-side extreme so addDistance collapses to high − low (full bar range). Does NOT modify the Qty input.">Add: --</span>
+                    <button id="buyBtn" class="buy-btn" disabled>BUY</button>
+                    <button id="sellBtn" class="sell-btn" disabled>SELL</button>
+                    <button id="flattenBtn" class="flatten-btn" disabled title="Cancel all working orders (in-flight market + resting stops) and close any open position with a market order through the same 200ms slippage window as BUY/SELL.">Flatten</button>
+                    <label for="stopPriceInput" title="Stop market order: triggers on bar.high ≥ stop (buy) or bar.low ≤ stop (sell). On trigger, sends a market order through the same 200ms slippage window as BUY/SELL — fill = worst high/low across the trigger bar and the next 1s bar.">Stop:</label>
+                    <input type="number" id="stopPriceInput" step="any" placeholder="price" title="Stop price (rounded to nearest tick).">
+                    <button id="buyStopBtn" class="buy-stop-btn" disabled title="Place a buy stop at the entered price (must be above current price).">Buy Stop</button>
+                    <button id="sellStopBtn" class="sell-stop-btn" disabled title="Place a sell stop at the entered price (must be below current price).">Sell Stop</button>
+                    <button id="tradeLogBtn" class="trade-log-btn">Trade Log</button>
                 </div>
+                <div id="pendingStopsList" class="pending-stops-list" hidden></div>
             </div>
         </div>
 
         <div id="chartContainer" class="chart-container"></div>
+        <div id="weatherPanel" class="weather-panel" hidden></div>
+        <div id="rankComparePanel" class="rank-compare-panel" hidden></div>
     </div>
 
-    <!-- Trade Log Modal -->
     <div id="tradeLogModal" class="modal">
         <div class="modal-content">
             <div class="modal-header">
@@ -142,6 +200,15 @@
                 <span class="close-modal">&times;</span>
             </div>
             <div class="modal-body">
+                <div id="tradeMetricsContent" class="trade-metrics"></div>
+                <details id="equityDetails" class="equity-details">
+                    <summary>Cumulative Return Chart</summary>
+                    <div id="equityChart" class="equity-chart"></div>
+                </details>
+                <div class="trade-log-actions">
+                    <button id="downloadCsvBtn" title="Download all completed trades for this session as a CSV.">Download CSV</button>
+                    <button id="clearLogBtn" title="Delete the saved replay session and start a fresh trade log.">Clear Log</button>
+                </div>
                 <div id="tradeLogContent"></div>
             </div>
         </div>

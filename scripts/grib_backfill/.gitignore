@@ -1,0 +1,7 @@
+# Downloaded GRIB files (huge; deleted after extraction) and the extracted
+# Parquet (regenerable). The pipeline SCRIPTS are tracked; their outputs aren't.
+staging/
+extracted/
+_probe_*.py
+*.grib2
+*.grib2.idx

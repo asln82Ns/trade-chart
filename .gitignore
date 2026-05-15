@@ -1,1 +1,15 @@
 *.csv
+.env
+__pycache__/
+*.pyc
+server/data_cache/
+.venv/
+venv/
+.idea/
+.vscode/
+weather/weather_cache/
+weather/_pychache_/
+*.db
+*.db-shm
+*.db-wal
+*.parquet

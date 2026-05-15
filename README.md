@@ -1,326 +1,369 @@
 # Trade Chart
 
-A lightweight, browser-based trading data visualizer with tick-by-tick replay and **live trade simulation** functionality.
+Browser-based futures **replay simulator + live monitor** for 15 CME-group
+contracts. Pulls 1-second OHLCV from Databento, volume-splices contracts
+into a continuous price series, computes percentile-rank metrics over a
+configurable lookback, and supports threshold-based alerts.
+
+```
+┌─────────────┐     HTTP / WS     ┌──────────────────────┐    HTTPS / Live    ┌──────────────┐
+│  Browser    │ ◀───────────────▶ │  FastAPI sidecar     │ ◀─────────────────▶│  Databento   │
+│  (HTML/JS)  │                   │  + parquet cache     │                    │ Hist + Live  │
+└─────────────┘                   └──────────────────────┘                    └──────────────┘
+```
 
 ## Features
 
-- **5-Minute OHLC Bars**: Automatically groups trade data into 5-minute bars
-- **Tick-by-Tick Replay**: Watch every price movement as it happened in real-time
-- **Volume Analytics**: Real-time bid/ask volume distribution with percentages
-- **Trade Simulation**: Place buy/sell market orders with realistic 200ms slippage
-- **Real-Time P&L**: Track realized and unrealized profit/loss as prices move
-- **Position Management**: Build and close positions with multiple entries
-- **Speed Control**: Adjust playback speed from 10 to 5,000 ticks per second
-- **Jump to Timestamp**: Load any time period with 400 bars of historical context
-- **UTC Time Display**: All timestamps shown in UTC with no conversion
-- **Large File Support**: Efficiently handles 3GB+ CSV files through IndexedDB caching
-
-## Project Structure
-
-```
-trade-chart/
-├── index.html              
-├── css/
-│   └── styles.css          
-├── js/
-│   ├── main.js             
-│   ├── db-manager.js       
-│   ├── csv-processor.js    
-│   ├── chart-controller.js 
-│   ├── playback-engine.js  
-│   └── trade-simulator.js
-├── data.csv                
-└── README.md               
-```
+- **15 supported assets** (all GLBX.MDP3): NG, CL, HO, NQ, YM, GC, SI, PL,
+  MBT, 6E, 6B, 6C, 6S, 6J, 6N
+- Two modes: **Replay** (historical entry-anchored playback with simulated
+  trading) and **Live** (real-time bars on today's volume-leader contract)
+- All 15 assets stream on **one Databento Live connection** (1 of the 10
+  Standard-plan slots), pre-warmed at startup
+- Timeframes: 1m, 5m, 15m, 30m, 1h, 90m, 3h, 4h, 1D
+- All times shown in **America/New_York** (ET)
+- 1-second tape source — bars build live as the replay plays or live ticks
+  arrive
+- **Volume-splice** continuous-contract construction with marker on each roll
+- Volume histogram pane synced to candles
+- Y-axis labels every **10 ticks** (`minMove = 10 × tick_size`)
+- Trade simulation with 200ms slippage window, per-asset point value
+- **Tick value** + **Dollar Risk** displayed alongside Qty (Risk = distance
+  from close to bar's adverse extreme × point value)
+- **$ Target** input auto-computes Qty as `floor(target ÷ Risk)` on each tick
+- **Percentile-rank metrics** (Vol Rank, Vol Pending, Range Rank, Range
+  Pending) computed against a rolling lookback (default 365 days) with a
+  per-bucket within-bar profile estimator
+- **Alert system**: threshold-based on any rank metric; per-asset or "All"
+  fan-out; rising-edge re-fire; persistent top-of-screen banner (30s) +
+  audible beep; click chip or banner to switch chart to that asset/timeframe
+- Color-coded alert chips: green when in alert state, red ≤5pp from
+  threshold, yellow ≤10pp, default otherwise
 
 ## Setup
 
-### Requirements
-- Modern web browser (Chrome, Firefox, Edge, Safari)
-- Local web server (required for ES6 modules)
+### 1. Backend
 
-### Installation
+```bash
+pip install -r requirements.txt
+cp .env.example .env
+# edit .env, paste your DATABENTO_API_KEY
 
-1. Clone or download this repository
-2. Place your `data.csv` file in the project root directory
-3. **Start a local web server** (choose one method):
+# For active live testing (no auto-reload — most reliable shutdown):
+python -m uvicorn server.main:app --port 8001
 
-   **Option A: Python (if installed)**
-   ```bash
-   cd trade-chart
-   python -m http.server 8000
-   ```
-   Then open: `http://localhost:8000`
-
-   **Option B: Node.js (if installed)**
-   ```bash
-   cd trade-chart
-   npx serve
-   ```
-   Then open the URL shown in terminal
-
-   **Option C: VS Code (if using)**
-   - Install "Live Server" extension
-   - Right-click `index.html`
-   - Select "Open with Live Server"
-
-4. The application will open in your browser
-
-**Important**: You cannot simply double-click `index.html` due to browser security restrictions on ES6 modules. A local server is required.
-
-## CSV Format
-
-Your `data.csv` should have the following format:
-
-```csv
-ts_recv,ts_event,rtype,publisher_id,instrument_id,action,side,depth,price,size,flags,ts_in_delta,sequence,symbol
-2025-08-01 00:00:00.049882007+00:00,2025-08-01 00:00:00.049413979+00:00,0,1,42008487,T,A,0,23297.5,2,0,15959,211939573,NQU5
+# For non-live work (replay UI tweaks, ranks, etc. — auto-reloads on save):
+python -m uvicorn server.main:app --reload --port 8001
 ```
 
-**Required columns:**
-- `ts_recv`: UTC timestamp with timezone (ISO 8601 format)
-- `price`: Trade price (float)
-- `size`: Trade size/volume (integer)
-- `side`: 'B' for bid (buyer initiated), 'A' for ask (seller initiated)
+On startup the server pre-warms (in parallel) the splice schedule + active
+contract for every asset, opens a single Databento Live session subscribed
+to all 30 raw_symbols (15 × {1-digit, 2-digit fallback}), then sequentially
+pre-builds the **5m rank cache** for all 15 assets in the background. After
+~5–25 minutes (cold cache) every default-tf chart switch is instant; on
+warm-cache restarts the pre-warm completes in seconds.
 
-**Note**: Other columns (ts_event, rtype, publisher_id, etc.) are preserved but not currently used.
+### Restarting safely (avoiding session-slot exhaustion)
+
+The Databento Standard plan allows **10 concurrent Live sessions per
+dataset per account**. Each running uvicorn process holds 1 slot. The
+gateway releases a slot when its TCP connection closes — **but only if the
+client disconnected gracefully**. If the worker is force-killed before
+`LIVE_MANAGER.stop()` runs, the slot stays held until Databento's idle
+timeout fires (typically 5–15 min). Repeated unclean restarts can drain
+all 10 slots; the symptom is the next session authenticates but receives
+**zero records** (visible as `records_received: 0` in `/live_status`, and
+the chart stays stuck at the prime payload's last bar).
+
+The lifespan + `atexit` shutdown path in `server/main.py` makes this
+unlikely under normal conditions. To stay safe:
+
+- **Close every browser tab pointing at this server BEFORE restarting,
+  and only re-open them after `pre-warm: complete`.** Critical for
+  reliability. With the browser open at startup, the page-load burst
+  (initial `/health`, `/assets`, `/alerts`, `/live_status` calls plus
+  the `/ws/live` handshake) races against the Databento Live SDK's
+  first-second buffer drain. Under combined load with rank pre-warm,
+  the SDK's daemon thread can lose enough GIL time that the kernel
+  TCP buffer fills, the gateway throttles, and the live feed freezes
+  silently for the rest of the session — same `records_received: 0`
+  symptom as slot exhaustion, but a different cause and **no probe
+  script will detect it** because the gateway is healthy. The fix is
+  procedural: shut server → close tabs → start server → wait for
+  `pre-warm: complete` (or just for `LiveAssetManager: 1000 records
+  received` in the log) → THEN open the browser. Reproduced and
+  documented 2026-05-05; a permanent in-server auto-retry fix is
+  noted as TODO in `_live_watchdog`.
+- **Single `Ctrl-C`, then wait** for `Application shutdown complete`
+  before restarting. Pressing Ctrl-C twice escalates to SIGKILL and
+  bypasses the cleanup.
+- **Avoid `kill -9 <pid>` / `taskkill /F`** — same problem.
+- **Prefer plain `uvicorn` over `--reload`** when you're actively
+  watching live data. `--reload` reaps the worker more aggressively on
+  file changes; plain mode only reacts to your explicit Ctrl-C.
+- **Use `--reload` for non-live work** (replay UI, ranks, layout) where
+  briefly losing the live feed during reload doesn't matter.
+
+If the gateway is silent, the server logs a `WARNING server: Live gateway
+delivered 0 records 30s after session start…` from the watchdog. There are
+two distinct failure modes that produce the same symptom (`records_received:
+0` in `/live_status`, chart stuck at the prime cutoff). Use the diagnostic
+ladder in `scripts/probe_live.py` to tell them apart in 60 seconds:
+
+```bash
+# Test 1 — gateway healthy at all? (1 symbol, no replay)
+python scripts/probe_live.py NG
+
+# Test 2 — replay path healthy? (1 symbol + replay window)
+python scripts/probe_live.py NG --start-seconds-back 7200
+
+# Test 3 — full main-server replication (15 assets × 2 forms + replay)
+python scripts/probe_live.py --all-assets --start-seconds-back 7200
+```
+
+How to read the result matrix:
+
+| Test 1 | Test 2 | Test 3 | Diagnosis |
+|---|---|---|---|
+| ✓ | ✓ | ✓ | Gateway is fully healthy — the main server has a code bug |
+| ✓ | ✓ | ✗ | Multi-symbol replay tripped the gateway (rare) |
+| ✓ | ✗ | ✗ | Replay mode failing for this account (Databento-side) |
+| ✗ | ✗ | ✗ | Account-wide gateway issue — wait or contact Databento |
+
+**Past root causes we've hit and fixed:**
+
+- *All three tests pass but main server gets zero records:* `live.py warm_all`
+  was splitting `subscribe()` and `start()` across separate
+  `asyncio.to_thread` calls, landing on different worker threads, breaking
+  the databento client's thread affinity. Fixed by single-threading the
+  whole `construct → add_callback → subscribe → start` sequence in one
+  `asyncio.to_thread`. See the long comment in `LiveAssetManager.warm_all`
+  for the trace.
+- *Probe also returns zero records:* sometimes a transient Databento gateway
+  hiccup leaves a session zombified (TCP alive, no data). Wait a few minutes
+  and re-run the probe.
+
+### 2. Frontend
+
+In a second terminal:
+
+```bash
+python -m http.server 8000
+```
+
+Open <http://localhost:8000>.
+
+## Server endpoints
+
+| Method | Path | Description |
+|---|---|---|
+| GET | `/health` | Config check |
+| GET | `/assets` | Supported assets with tick / point value / decimals |
+| GET | `/splice/{asset}?start&end` | Splice schedule for the window |
+| GET | `/load?asset&entry&from&to` | Spliced 1s bars in entry-contract price space |
+| GET | `/ranks?asset&timeframe&entry&lookback_days` | Per-bucket distributions + within-bar profiles |
+| GET | `/resolve_session?instant` | Map an ISO instant to its CME trade date |
+| GET | `/probe?raw_symbol&schema&start&end` | Diagnostic: hit Databento directly with one symbol |
+| GET | `/live_status` | LiveAssetManager snapshot (records, instrument map, warmup status) |
+| WS  | `/ws/live` | Persistent live channel (per-asset bar streaming + global alert broadcast) |
+| GET | `/alerts` | List registered alerts |
+| POST | `/alerts?asset&metric&op&threshold&tf&lookback` | Register an alert |
+| DELETE | `/alerts/{id}` | Remove one alert |
+| DELETE | `/alerts` | Clear all alerts |
+
+Cached parquet files land in `server/data_cache/` (gitignored). Two
+caching strategies, picked per schema:
+
+- **`ohlcv-1d`** uses a **rolling per-contract** parquet at
+  `cache_dir/rolling/{dataset}/{raw_symbol}/ohlcv-1d.parquet`. Each daily
+  bar is stored once and re-used across all callers regardless of the
+  request's date range. Survives the daily UTC-midnight rollover that
+  would otherwise invalidate exact-keyed cache files. NO `.empty` marker
+  for ohlcv-1d — empty contracts get re-queried on each cold-process
+  start (cheap, parallel) so a contract that newly starts trading isn't
+  permanently masked.
+- **`ohlcv-1s`** keeps the original exact `(start, end)`-keyed flat
+  parquet (`cache_dir/{dataset}__{symbol}__ohlcv-1s__{start}__{end}.parquet`)
+  with a sibling `.empty` marker for never-traded ranges. 1s windows are
+  session-bounded and don't share usefully across requests, so the
+  flat-file pattern is appropriate.
 
 ## Usage
 
-### First Time Setup (One-time process)
+### Replay mode
 
-1. Click **"Choose File"** and select your `data.csv`
-2. Click **"Process Data"**
-3. Wait 2-5 minutes while the CSV is processed (progress bar shows status)
-4. Data is cached in your browser's IndexedDB for instant access later
+1. Pick **Asset** and **Entry (ET)** — the datetime that defines the entry
+   session (price-space anchor).
+2. Pick **Timeframe** and **Lookback** (days for rank distributions).
+3. Click **Load**. Backend fetches contracts, splices to a continuous series
+   in entry-contract price space, returns bars + roll markers + ranks.
+4. Click **Play**. The 1s tape plays at the configured speed multiplier;
+   the timeframe bar grows live.
+5. Place orders during playback. Slippage uses the high (buy) or low (sell)
+   of the 1s bar covering the placement instant.
 
-### Loading Data
+### Live mode
 
-1. Enter a **UTC timestamp** in the format: `YYYY-MM-DD HH:MM:SS`
-   - **Important**: Enter the time in UTC, not your local timezone
-   - Example: If your data shows `2025-06-04 10:30:00 UTC`, enter exactly that
-2. Click **"Load"**
-3. The system loads **400 bars BEFORE** your timestamp for context
-4. Chart displays these 400 bars as completed OHLC (historical context)
-5. All remaining bars until end of dataset are loaded for tick-by-tick replay
+1. Toggle to **Live**.
+2. Pick **Asset** and **Timeframe**.
+3. Click **Connect**. Server sends the prime payload (last 2 sessions of
+   spliced 1s bars in today's contract price space) and starts streaming
+   live ticks. Re-subscribing to the same asset on switch is instant; the
+   per-asset bar history flushes from the last prime cutoff to "now" so
+   there's no chart gap.
 
-### Playback Controls
+### Alerts
 
-- **Play**: Starts replaying bars tick-by-tick from the 400-bar context point
-- **Pause**: Pause playback at current position
-- **Reset**: Return to initial state (400 context bars visible, P&L reset)
-- **Speed Slider**: Adjust from 10 to 5,000 ticks per second
+1. Build the alert in the row at top: **Asset** (or "All"), **Metric**
+   (Vol/Range × Rank/Pending), **Operator** (≥/≤), **Threshold (%)**,
+   **Timeframe**.
+2. Click **Add Alert**. The alert chip appears with the current evaluated
+   value (`@N%`) and fire count (`×K`).
+3. When the metric crosses the threshold from below, a notification banner
+   slides down at the top of the screen (persists 30s, dismissible),
+   accompanied by an audible beep. Re-fires on each rising-edge re-cross
+   (e.g., new bar after the value reset).
+4. **Click any chip or banner** to switch the chart to that asset/timeframe.
+5. **Clear All** removes every registered alert in one call.
 
-### Volume Analytics
+Alerts evaluate server-side on every finalized 1s bar, broadcast over the
+WebSocket regardless of which asset the client is currently viewing.
 
-The info panel displays real-time volume metrics for each bar:
+## Data flow (replay)
 
-- **Total Volume**: Sum of all trade sizes in the bar
-- **Total Trades**: Count of all ticks/trades in the bar
-- **Bid Trades**: `Count (% of trades) | Vol: Size (% of volume)` - Buyer-initiated trades
-- **Ask Trades**: `Count (% of trades) | Vol: Size (% of volume)` - Seller-initiated trades
+- Initial load: 10 trading sessions before entry + 5 after.
+- Prefetch: at 80% through the loaded forward data, the next 5 sessions are
+  fetched in the background and appended to the tape.
+- Eviction: when the in-memory tape exceeds 30 sessions, the oldest sessions
+  outside the active replay are dropped (chart unaffected).
 
-**Example Display:**
+## Data flow (live)
+
+- All 15 assets are subscribed at server startup with `start =
+  today_midnight_UTC` so Databento Live replays from the historical archive
+  cutoff to "now," eliminating the chart-gap problem.
+- One persistent WebSocket per browser session; surveillance of multiple
+  assets and global alert broadcast share the same socket.
+- Per-asset `bar_history` deque (24h cap) means a re-attaching subscriber
+  catches up cleanly without a hole.
+
+## Volume-splice methodology
+
+For each asset:
+
+1. Enumerate candidate contracts in the splice window.
+2. Fetch each contract's `ohlcv-1d` daily volume.
+3. Walk the trading sessions in order. Seed the active contract with the
+   highest-volume contract in the first session.
+4. At each subsequent session S, if `prior_session_volume(next) >
+   prior_session_volume(current)`, roll to next. **Forward-only.**
+5. At each roll session R: spread = (new contract's 18:00 ET 1s open) -
+   (old contract's 18:00 ET 1s open). Subsequent bars are translated by the
+   accumulated cumulative spread so the entire series sits in the entry
+   contract's price space.
+6. If the same-instant 18:00 ET bar is missing for either contract, the roll
+   is flagged as `incomplete=True` and rendered with an orange marker (vs
+   blue for complete rolls). The spread is set to 0 in that case.
+
+## Project layout
+
 ```
-Bid Trades: 156 (61.2%) | Vol: 3,450 (68.5%)
-Ask Trades: 99 (38.8%) | Vol: 1,585 (31.5%)
+trade-chart/
+├── index.html
+├── css/styles.css
+├── js/
+│   ├── api-client.js       # HTTP + WebSocket wrapper for the FastAPI sidecar
+│   ├── asset-config.js     # per-asset metadata, populated from /assets
+│   ├── time-utils.js       # ET formatting + timeframe-aligned bar flooring
+│   ├── chart-controller.js
+│   ├── playback-engine.js  # replay-mode tape + aggregation
+│   ├── live-engine.js      # live-mode aggregation (1s → timeframe)
+│   ├── rank-engine.js      # frontend percentile-rank lookup against /ranks data
+│   ├── trade-simulator.js
+│   └── main.js
+├── server/
+│   ├── assets.py           # 15-asset config (tick/point/decimals/month codes)
+│   ├── sessions.py         # CME session boundary helpers
+│   ├── databento_client.py # Historical fetch + rolling (ohlcv-1d) / exact (ohlcv-1s) parquet caching
+│   ├── splice.py           # volume-splice schedule construction
+│   ├── ranks.py            # /ranks distribution + within-bar profile builder
+│   ├── live.py             # LiveAssetManager (one Databento Live session, fan-out)
+│   ├── alerts.py           # AlertManager (rising-edge eval, broadcast)
+│   ├── main.py             # FastAPI app + startup pre-warm tasks
+│   └── data_cache/         # parquet + ranks JSON cache (gitignored)
+├── requirements.txt
+├── .env.example
+└── README.md
 ```
 
-This shows order flow imbalances - in this example, more buying pressure with larger buy sizes.
+## Limitations / known gaps
 
-**Hover over any bar** to view its volume metrics, or watch them update in real-time during playback.
-
-### Trade Simulation
-
-#### Placing Orders
-
-1. **Set Quantity**: Enter number of contracts (default: 1)
-2. **During Playback Only**: Buy/Sell buttons are enabled only when playing
-3. **Click BUY or SELL**: Order is placed at current tick timestamp
-4. **200ms Slippage Simulation**: 
-   - System collects all trade prices for next 200ms
-   - BUY fills at **highest price** in window (worst case)
-   - SELL fills at **lowest price** in window (worst case)
-5. **Order Confirmation**: Check browser console for fill details
-
-#### Position Management Rules
-
-- **Directional Restriction**: Must flatten position before reversing
-  - Example: LONG 10 → must SELL 10 to go flat → can then go SHORT
-  - Blocked: LONG 10 → SELL 15 ❌ (trying to reverse to SHORT 5)
-  
-- **Multiple Entries Allowed**: Can add to existing position
-  - Example: BUY 5 @ 21300 → BUY 10 @ 21305
-  - System calculates weighted average entry: 21303.33
-  - Position: LONG 15 @ avg 21303.33
-
-- **Partial Closes**: Can close portions of position
-  - Example: LONG 20 → SELL 8 → LONG 12 remaining
-
-#### P&L Calculation
-
-- **Point Value**: NQ standard = $20 per point per contract
-- **Unrealized P&L**: 
-  - LONG: (Current Price - Avg Entry) × Position × $20
-  - SHORT: (Avg Entry - Current Price) × Position × $20
-- **Realized P&L**: Accumulated from all closed trades
-- **Total P&L**: Realized + Unrealized (updates every tick)
-
-#### P&L Persistence
-
-- **Persists Through**: Play/Pause actions
-- **Resets On**: 
-  - Reset button click
-  - Load button click (new time range)
-- **Real-Time Updates**: P&L updates every tick during playback
-
-#### Display Information
-
-Trade info panel shows:
-- **Position**: FLAT / LONG X / SHORT X
-- **Avg Entry**: Average entry price of current position
-- **Realized P&L**: Profit/loss from closed trades
-- **Unrealized P&L**: Current position's floating P&L
-- **Total P&L**: Sum of realized + unrealized (color coded: green/red)
-
-### Replay Behavior
-
-1. **Initial State**: Chart shows 400 completed historical bars for context
-2. **Press Play**: Starts replaying remaining bars tick-by-tick
-3. **Replay**: New bars appear and grow at the END of the chart (like real-time)
-4. **Building Bars**: Watch each bar form as trades are processed
-5. **Speed**: 10-5,000 ticks per second (configurable via slider)
-6. **Trading**: Place orders during playback only (buttons disabled when paused)
-7. **Completion**: When all bars processed, replay stops
-8. **Press Reset**: Returns to initial state (clears P&L and chart)
-
-## Technical Details
-
-### Trade Simulation Architecture
-
-1. **Pending Order Queue**: FIFO queue stores orders with placement timestamp
-2. **Slippage Window**: 200ms collection period after order placement
-3. **Worst-Case Execution**: Buy = highest tick, Sell = lowest tick in window
-4. **Position Tracking**: Maintains quantity, direction, and average entry price
-5. **P&L Engine**: Calculates realized (on close) and unrealized (mark-to-market) P&L
-6. **Tick Processing**: Every trade updates unrealized P&L and checks pending orders
-
-### Data Processing
-
-1. **CSV Parsing**: Uses PapaParse to stream large files
-2. **Bar Grouping**: Groups trades into 5-minute intervals based on UTC time
-3. **Trade Preservation**: Each bar stores array of individual trades with timestamps
-4. **Volume Tracking**: Aggregates bid/ask volume and trade counts per bar
-5. **Storage**: Saves processed bars to IndexedDB (~50MB for 6 months of data)
-6. **Retrieval**: Instant loading via indexed timestamp queries
-
-### Memory Usage
-
-- **Processing**: Streams CSV in chunks (minimal memory impact)
-- **Playback**: Keeps all loaded bars in memory (400 context + all replay bars)
-- **Chart**: Renders visible bars only (~200 at a time)
-- **Trade Simulator**: Minimal overhead (~1KB per pending order)
-
-### Performance
-
-- **Rendering**: 30 FPS with requestAnimationFrame
-- **Tick Processing**: 10-5,000 ticks per second (configurable)
-- **Data Access**: <100ms to load bars from IndexedDB
-- **Chart Updates**: Uses Lightweight Charts' update() API (optimized for real-time)
-- **Order Execution**: <1ms per order fill calculation
-
-## Browser Compatibility
-
-✅ Chrome 90+  
-✅ Firefox 88+  
-✅ Edge 90+  
-✅ Safari 14+  
-
-All modern browsers with IndexedDB and ES6 module support.
+- **Multi-day server runs**: live `start=` anchor and rank-cache `entry`
+  are fixed at startup time. After UTC midnight, the historical archive
+  cutoff and ranks-by-date both advance — restart uvicorn daily for clean
+  semantics, or expect a small chart gap and stale rank distributions.
+- **Bid/ask volume split is not available** with the 1s tape (ohlcv-1s only
+  provides total volume). To recover the split, switch the recent-1yr window
+  to the `trades` schema in `databento_client.py`.
+- Slippage precision is bounded by the 1s tape: a 200ms window collapses to
+  the high (buy) / low (sell) of the bar covering the placement instant.
+- Holidays surface as empty sessions and are skipped naturally.
+- Daily (1D) bars anchor to the 18:00 ET CME session open; sub-daily
+  timeframes anchor to ET wall-clock midnight.
+- A contract roll mid-live-session won't auto-follow; reconnect to pick up
+  the new active contract.
+- Alerts are in-memory; cleared on server restart. The alert chip's
+  `@N% ×K` (latest value, fire count) updates via 5s polling of `/alerts`.
+- Rank pre-warm covers only the **5m timeframe**. Other timeframes
+  lazy-load on first request — first switch may take 30s–2min on cold
+  cache; after that, instant.
 
 ## Troubleshooting
 
-### "CORS policy" or "ERR_FAILED" errors
-- **Cause**: Trying to open `index.html` directly (file:// protocol)
-- **Solution**: Must use a local web server (see Setup section)
-- **Why**: Browsers block ES6 modules from file:// for security
-
-### "No data found for this time range"
-- Verify your timestamp is within the range of your CSV data
-- Check that data has been processed (click "Process Data" first)
-
-### "Cannot reverse position" error
-- System blocks going from LONG to SHORT (or vice versa) in one order
-- Solution: Close your position first (go flat), then open opposite direction
-
-### Progress bar stuck during processing
-- Check browser console for errors
-- Ensure CSV format matches expected format (ts_recv, price, size, side columns required)
-- Try a smaller sample file first
-
-### Chart not displaying
-- Open browser console (F12) to check for errors
-- Verify `data.csv` is in the correct format
-- Clear browser cache and IndexedDB, then reprocess
-
-### Performance issues
-- Reduce playback speed
-- Use a smaller time range (fewer bars)
-- Close other browser tabs
-
-## Example Trading Session
-
-```
-1. Load data: 2025-06-04 10:00:00
-2. Press Play - watch volume metrics update in real-time
-3. Observe: Bid: 180 (65%) | Vol: 4,200 (72%) - strong buying pressure
-4. Set Quantity: 5
-5. Click BUY when volume confirms trend
-   → Order placed at 21305.25
-   → Fills at 21305.75 (worst price in 200ms)
-   → Position: LONG 5 @ 21305.75
-6. Watch P&L update as price moves
-7. Price moves up to 21310.00
-   → Unrealized P&L: +$425 [(21310 - 21305.75) × 5 × $20]
-8. Add to position: Click BUY, Quantity: 10
-   → Fills at 21310.50
-   → Position: LONG 15 @ 21308.67 (weighted avg)
-9. Volume shifts: Ask: 200 (70%) | Vol: 5,800 (75%) - selling pressure
-10. Close position: Click SELL, Quantity: 15
-    → Fills at 21302.00
-    → Realized P&L: -$100
-    → Position: FLAT
-```
-
-## Future Enhancements
-
-- [ ] Stop-loss and take-profit orders
-- [ ] Limit orders with order book simulation
-- [ ] Multiple timeframes (1-min, 15-min, etc.)
-- [ ] Volume profile display
-- [ ] Trade log/journal export
-- [ ] Position sizing calculator
-- [ ] Keyboard shortcuts for quick trading
-- [ ] Risk metrics (max drawdown, Sharpe ratio)
-- [ ] Delta analysis (cumulative bid/ask imbalance)
-
-## Technology Stack
-
-- **UI**: Pure HTML/CSS/JavaScript (no frameworks)
-- **Charting**: Lightweight Charts v4.1.3 (via CDN)
-- **CSV Parsing**: PapaParse v5.4.1 (via CDN)
-- **Storage**: IndexedDB (native browser API)
-- **Server**: Any local web server (required for ES6 modules)
-
-**Total Code**: ~1,700 lines  
-**Dependencies**: 2 (both via CDN)  
-**Build Tools**: None  
-**Setup**: Start local server, open browser
-
-## License
-
-MIT License - Free to use and modify
-
-## Support
-
-For issues or questions, check the browser console for error messages and verify your CSV format matches the specification above.
+- **"Cannot reach API"** — start the uvicorn server (see Setup).
+- **"DATABENTO_API_KEY not configured"** — copy `.env.example` to `.env`,
+  paste your key, restart uvicorn.
+- **CORS error in browser console** — the frontend must be served from
+  <http://localhost:8000> or <http://127.0.0.1:8000> (or override
+  `CORS_ORIGINS` in `.env`).
+- **Empty `/load` response** — try a different entry date; some intraday
+  windows (especially right after a holiday) have thin data.
+- **`gateway error: Failed to resolve symbol N/15: <X>` at startup** —
+  expected. Each asset gets both 1-digit and 2-digit raw_symbol forms; the
+  gateway resolves whichever it recognizes and rejects the other. Check the
+  immediately following `Mapped instrument_id=N → ASSET (RAW)` lines to
+  confirm each asset got a working form.
+- **Alert "armed" but never fires** — open `/live_status` and `/alerts` in
+  a browser. Check `last_value` on the alert (the chip shows `@N%`); if
+  it's well below threshold, the condition simply isn't being met yet. If
+  `last_eval_time` is null, the asset isn't streaming (check `/live_status`
+  warmup_status and instrument_map).
+- **Slow first asset switch** — pre-warm runs 5m only; non-5m timeframes
+  lazy-load. On a fresh-cache day-1 boot the pre-warm itself takes longer.
+  Watch server logs for `rank pre-warm: <asset> tf=5m ready` to gauge
+  progress.
+- **Charts stuck at the prime cutoff (e.g. ~19:55 ET) and not updating
+  with live ticks** — server's `/live_status` shows `records_received: 0`
+  and the watchdog logs `WARNING server: Live gateway delivered 0 records
+  30s after session start`. Diagnostic order, cheapest first:
+  1. **Close every browser tab pointing at this server, then watch the
+     terminal.** If `LiveAssetManager record #1: SystemMsg` appears within
+     a second of pressing Ctrl+C *or* simply within a few seconds of
+     closing the last tab, the issue is **threadpool/GIL starvation from
+     polling endpoints**, not Databento. Any GET handler in
+     `server/main.py` that just reads in-memory state must be `async def`,
+     not `def`. Sync handlers run on anyio's threadpool and burn GIL
+     cycles that the `databento_live` daemon thread needs to drain its
+     socket — under sustained polling load the parser stops running and
+     records pile up in the kernel buffer until the load drops. See the
+     load-bearing comment block above the polling endpoints in
+     `server/main.py` for the rule. (Reproduced and fixed 2026-05-05.)
+  2. If records flow with no browser, the polling rule is being violated
+     somewhere — bisect by setting recently-added handlers back to
+     `async def`.
+  3. If records still don't flow even with no browser, run the probe
+     ladder (`python scripts/probe_live.py NG`,
+     `--start-seconds-back 7200`, `--all-assets --start-seconds-back 7200`)
+     to localise: probe receives records → server bug; probe also gets 0
+     → Databento gateway-side. See "Restarting safely" above for the
+     slot-exhaustion matrix.

@@ -1,0 +1,10 @@
+# Backfill-only dependencies. NOT part of the trade-chart runtime — install
+# these only when you want to run the one-time GRIB backfill:
+#     pip install -r scripts/grib_backfill/requirements.txt
+#
+# cfgrib + eccodes ship prebuilt Windows wheels (verified on Python 3.13),
+# so this is a plain `pip install` — no conda, no C toolchain.
+cfgrib>=0.9.15
+eccodes>=2.47
+xarray>=2024.0
+# pandas + pyarrow are already in the main requirements.txt (used for Parquet).
