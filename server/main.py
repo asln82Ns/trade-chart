@@ -133,10 +133,28 @@ async def _warm_live_assets() -> None:
         LIVE_MANAGER._ready.set()
         return
     today = trade_date_for_instant(datetime.now(timezone.utc))
+    # The Live replay start MUST equal the instant where the Historical
+    # /load path stops, or the chart shows a gap between the two feeds.
+    # Historical is hard-clamped to today's UTC midnight (_clamp_end in
+    # databento_client.py: min(end, today_midnight_utc)), so the live
+    # replay is anchored to that same instant — the two then butt together
+    # seamlessly and the feed replays the full current session up to now.
+    #
+    # The only exception: when UTC midnight (~20:00 ET the prior evening)
+    # lands in a closed-market gap (weekend/holiday), Databento Live has
+    # no instrument definitions to resolve against and the subscription
+    # fails entirely. There we advance to the session open; no real data
+    # is lost because a closed gap has no trades. We detect "closed" by
+    # asking whether UTC midnight falls inside any session's [open, close].
     today_midnight_utc = datetime.now(timezone.utc).replace(
         hour=0, minute=0, second=0, microsecond=0,
     )
-    backfill_start = int(today_midnight_utc.timestamp())
+    md_td = trade_date_for_instant(today_midnight_utc)
+    md_open = session_open_utc(md_td)
+    if md_open <= today_midnight_utc <= session_close_utc(md_td):
+        backfill_start = int(today_midnight_utc.timestamp())
+    else:
+        backfill_start = int(md_open.timestamp())
 
     logger.info("Pre-warm: resolving %d assets in parallel...", len(ASSETS))
     results = await asyncio.gather(*(
@@ -170,6 +188,7 @@ def _wire_alerts() -> None:
 
     ALERT_MANAGER.set_rank_loader(_load_rank)
     ALERT_MANAGER.set_broadcast(LIVE_MANAGER.broadcast_global)
+    ALERT_MANAGER.set_bar_backfill(LIVE_MANAGER.recent_bars)
     LIVE_MANAGER.set_on_finalized_bar(ALERT_MANAGER.on_finalized_bar)
 
 
@@ -217,6 +236,19 @@ async def _prewarm_ranks_background() -> None:
         return
     # Wait for live warmup to finish so we don't compete with splice fetches.
     await LIVE_MANAGER.wait_ready(timeout=900)
+    # wait_ready() only means subscribe()+start() returned — NOT that the
+    # gateway is delivering. The splice fan-out below is GIL-heavy (pandas
+    # parsing) and starves the Databento SDK reader thread; if it starts
+    # before the reader has begun draining, live records pile up gateway-
+    # side and the feed only "catches up" once the process is interrupted.
+    # Gate on the first real record (any SystemMsg/SymbolMapping/trade ticks
+    # records_received), so the reader is established and draining first.
+    # 60s ceiling: a genuinely silent market (or a dead/contended slot,
+    # where waiting longer wouldn't help anyway) still gets warmed.
+    for _ in range(120):
+        if LIVE_MANAGER.stats().get("records_received", 0) > 0:
+            break
+        await asyncio.sleep(0.5)
     today = trade_date_for_instant(datetime.now(timezone.utc))
     tf = 5
     lookback = 365
@@ -272,15 +304,41 @@ async def _live_watchdog() -> None:
     stats = LIVE_MANAGER.stats()
     if stats.get("records_received", 0) == 0:
         logger.warning(
-            "Live gateway delivered 0 records 30s after session start. "
-            "Most likely cause: Databento Live session-slot exhaustion "
-            "(Standard plan = 10 concurrent slots; un-released slots time "
-            "out gateway-side after ~5-15 min). Mitigations: wait 5-15 min "
-            "then restart ONCE; prefer plain `uvicorn` over `--reload` for "
-            "live testing; always single-Ctrl-C and wait for "
-            "'Application shutdown complete' before restarting. Run "
-            "`python scripts/probe_live.py` to confirm gateway side."
+            "Live feed delivered 0 records 30s after session start — WEDGE "
+            "(see docs/live-feed-known-issues.md, Bug 3). Confirmed pattern: "
+            "the Databento SDK buffers ALL inbound messages — trades and the "
+            "gateway's own protocol/error messages alike — and releases them "
+            "only when client.stop() runs (on Ctrl+C shutdown). The gateway "
+            "responds immediately; the stall is client-side in the SDK "
+            "delivery path, and a bare-SDK probe reproduces it. Two thread "
+            "dumps follow below. BEST next diagnostic: run `py-spy dump "
+            "--pid %d` NOW, while still wedged — py-spy shows native frames "
+            "that the faulthandler dump (Python frames only) cannot. When "
+            "the buffer drains on shutdown, check the log for 'GATEWAY "
+            "ERROR' lines: a stale replay start= ('Invalid start time') is "
+            "a separate confirmed bug.",
+            os.getpid(),
         )
+        # Diagnostic-only: dump every thread's stack so we can see exactly
+        # where databento's internal reader thread is blocked during the
+        # wedge (it has eluded proxy reproduction entirely). Two dumps 4s
+        # apart: identical stacks across both => that thread is genuinely
+        # stuck, not mid-progress. Written to a file (terminal scrollback
+        # is huge) and stderr. No behavior change.
+        import faulthandler
+        import sys as _sys
+        for i in (1, 2):
+            fname = f"thread_dump_{os.getpid()}_{i}.txt"
+            try:
+                with open(fname, "w") as fh:
+                    faulthandler.dump_traceback(file=fh, all_threads=True)
+                faulthandler.dump_traceback(file=_sys.stderr, all_threads=True)
+                logger.warning("wrote %s (records still %d)", fname,
+                                LIVE_MANAGER.stats().get("records_received", 0))
+            except Exception as e:
+                logger.warning("thread dump %d failed: %s", i, e)
+            if i == 1:
+                await asyncio.sleep(4)
 
 
 @asynccontextmanager

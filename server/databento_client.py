@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import logging
 import threading
+import time
 import warnings
 from datetime import datetime, timezone
 from pathlib import Path
@@ -64,6 +65,18 @@ ROLLING_DIR_NAME = "rolling"
 # append-only over time — perfect for rolling. 1s data is session-bounded and
 # the existing exact-keyed cache is already correct for it.
 ROLLING_SCHEMAS = frozenset({"ohlcv-1d"})
+
+# Substrings (matched case-insensitively against the exception text) that
+# mark a TRANSIENT transport/gateway failure — distinct from a genuine
+# "no data" / unresolved-symbol result. A transient failure must NOT be
+# cached as a permanent .empty marker, or one momentary gateway hiccup
+# (e.g. a 504 on a just-rolled contract's wide recent window) becomes a
+# sticky chart gap until the (start,end) cache key rotates. 422/symbology
+# is intentionally NOT here: that's a real empty and SHOULD be markered.
+_TRANSIENT_ERROR_MARKERS = (
+    "timed out", "timeout", "502", "503", "504",
+    "connection", "remotedisconnected", "temporarily unavailable",
+)
 
 
 class DatabentoClient:
@@ -139,29 +152,76 @@ class DatabentoClient:
         return merged
 
     def _fetch_one(self, dataset: str, raw_symbol: str, schema: str,
-                   start: datetime, end: datetime) -> pd.DataFrame:
-        """Try a single raw_symbol, return df (possibly empty), no caching here."""
-        try:
-            data = self._client.timeseries.get_range(
-                dataset=dataset,
-                schema=schema,
-                symbols=[raw_symbol],
-                stype_in="raw_symbol",
-                start=start,
-                end=end,
-            )
-            df = data.to_df()
-        except Exception as exc:  # databento raises various; treat as empty
-            msg = str(exc)
-            if "data_end_after_available_end" in msg or "data_start_before_available_start" in msg:
-                logger.debug("databento range issue for %s %s [%s..%s]: %s",
-                             raw_symbol, schema, start, end, msg)
-            else:
-                logger.warning("databento error for %s %s [%s..%s]: %s",
-                               raw_symbol, schema, start, end, exc)
-            return pd.DataFrame()
+                   start: datetime, end: datetime,
+                   retries: int = 2) -> tuple[pd.DataFrame, bool]:
+        """Try a single raw_symbol. Returns (df, do_not_marker_empty).
+
+        do_not_marker_empty=True means an empty result must NOT be cached as
+        a permanent .empty marker — it is expected to self-heal. Set for:
+          * transport/gateway failures (504/timeout/connection) that survive
+            the `retries` bounded retries; and
+          * `data_end_after_available_end` — the requested end is briefly
+            ahead of Databento's published data frontier (typically a fetch
+            running right at the _clamp_end UTC-midnight boundary); the data
+            appears once Databento publishes it. Markering it would poison a
+            window that genuinely has data (Bug 4 family).
+        A genuine empty (no data / unresolved symbol /
+        `data_start_before_available_start`) returns False and IS safe to
+        marker. No caching here.
+        """
+        attempt = 0
+        while True:
+            try:
+                data = self._client.timeseries.get_range(
+                    dataset=dataset,
+                    schema=schema,
+                    symbols=[raw_symbol],
+                    stype_in="raw_symbol",
+                    start=start,
+                    end=end,
+                )
+                df = data.to_df()
+                break
+            except Exception as exc:  # databento raises various
+                msg = str(exc)
+                if "data_end_after_available_end" in msg:
+                    # Requested end is briefly ahead of Databento's published
+                    # data frontier — common when a fetch lands right at the
+                    # _clamp_end UTC-midnight boundary. The data will appear
+                    # once published, so signal do-not-marker (True): caching
+                    # a permanent .empty here poisons a window that genuinely
+                    # has data, and every later /load returns 0 bars (Bug 4
+                    # family — see docs/live-feed-known-issues.md).
+                    logger.debug("databento end-after-available for %s %s "
+                                 "[%s..%s]: %s — not markering",
+                                 raw_symbol, schema, start, end, msg)
+                    return pd.DataFrame(), True
+                if "data_start_before_available_start" in msg:
+                    # Requested start predates the contract's first data — a
+                    # genuine empty for this window key, safe to marker.
+                    logger.debug("databento start-before-available for %s %s "
+                                 "[%s..%s]: %s",
+                                 raw_symbol, schema, start, end, msg)
+                    return pd.DataFrame(), False
+                transient = any(m in msg.lower()
+                                for m in _TRANSIENT_ERROR_MARKERS)
+                if transient and attempt < retries:
+                    attempt += 1
+                    backoff = 2 * attempt
+                    logger.warning(
+                        "databento transient error for %s %s [%s..%s]: %s "
+                        "— retry %d/%d in %ds",
+                        raw_symbol, schema, start, end, exc,
+                        attempt, retries, backoff)
+                    time.sleep(backoff)
+                    continue
+                logger.warning(
+                    "databento error for %s %s [%s..%s]: %s%s",
+                    raw_symbol, schema, start, end, exc,
+                    " (transient, retries exhausted)" if transient else "")
+                return pd.DataFrame(), transient
         if df is None or df.empty:
-            return pd.DataFrame()
+            return pd.DataFrame(), False
         # Standardize index to a tz-aware UTC DatetimeIndex named ts_event.
         if not isinstance(df.index, pd.DatetimeIndex):
             df = df.reset_index()
@@ -169,7 +229,7 @@ class DatabentoClient:
             df.index = df.index.tz_localize("UTC")
         else:
             df.index = df.index.tz_convert("UTC")
-        return df
+        return df, False
 
     @staticmethod
     def _ensure_utc(df: pd.DataFrame) -> pd.DataFrame:
@@ -224,20 +284,33 @@ class DatabentoClient:
         if empty_marker.exists():
             return pd.DataFrame()
 
-        df = self._fetch_one(dataset, raw_symbol, schema, start, end)
+        df, failed = self._fetch_one(dataset, raw_symbol, schema, start, end)
         logger.info("fetch %s %s [%s..%s]: %d rows",
                     raw_symbol, schema, start.date(), end.date(), len(df))
         if df.empty and fallback_raw_symbol and fallback_raw_symbol != raw_symbol:
-            df_fb = self._fetch_one(dataset, fallback_raw_symbol, schema, start, end)
+            df_fb, fb_failed = self._fetch_one(dataset, fallback_raw_symbol,
+                                               schema, start, end)
             logger.info("fetch fallback %s %s [%s..%s]: %d rows",
                         fallback_raw_symbol, schema, start.date(), end.date(), len(df_fb))
             df = df_fb
+            failed = failed or fb_failed
 
         if not df.empty:
             try:
                 df.to_parquet(path)
             except Exception as exc:
                 logger.warning("Failed to write cache %s: %s", path, exc)
+        elif failed:
+            # Transient transport failure with no data — do NOT write the
+            # sticky .empty marker, or this momentary gateway hiccup becomes
+            # a permanent gap until the (start,end) key rotates. Leaving no
+            # marker means the next /load re-attempts (self-heals on
+            # recovery). Genuine empties (422/no-data) still get markered
+            # below to avoid pointlessly re-querying expired contracts.
+            logger.warning(
+                "Not caching empty for %s %s [%s..%s]: transient fetch "
+                "failure — will retry on next request",
+                raw_symbol, schema, start.date(), end.date())
         else:
             try:
                 empty_marker.touch()
@@ -362,13 +435,13 @@ class DatabentoClient:
                 if fetch_start <= start:
                     forward_fill_covered_window = True
                 if fetch_start < end:
-                    new_df = self._fetch_one(dataset, raw_symbol, schema,
-                                              fetch_start, end)
+                    new_df, _ = self._fetch_one(dataset, raw_symbol, schema,
+                                                 fetch_start, end)
                     used_fallback = False
                     if (new_df.empty and fallback_raw_symbol
                             and fallback_raw_symbol != raw_symbol):
-                        new_df = self._fetch_one(dataset, fallback_raw_symbol,
-                                                  schema, fetch_start, end)
+                        new_df, _ = self._fetch_one(dataset, fallback_raw_symbol,
+                                                     schema, fetch_start, end)
                         used_fallback = True
                     if used_fallback:
                         logger.info("fetch fallback (rolling) %s %s [%s..%s]: %d rows",
@@ -422,13 +495,13 @@ class DatabentoClient:
                 backfill_end_dt = (sliced.index.min() - grace).to_pydatetime()
 
             if backfill_end_dt is not None and start < backfill_end_dt:
-                back_df = self._fetch_one(dataset, raw_symbol, schema,
-                                           start, backfill_end_dt)
+                back_df, _ = self._fetch_one(dataset, raw_symbol, schema,
+                                              start, backfill_end_dt)
                 used_fallback = False
                 if (back_df.empty and fallback_raw_symbol
                         and fallback_raw_symbol != raw_symbol):
-                    back_df = self._fetch_one(dataset, fallback_raw_symbol,
-                                               schema, start, backfill_end_dt)
+                    back_df, _ = self._fetch_one(dataset, fallback_raw_symbol,
+                                                  schema, start, backfill_end_dt)
                     used_fallback = True
                 if used_fallback:
                     logger.info("fetch fallback (rolling backfill) %s %s [%s..%s]: %d rows",

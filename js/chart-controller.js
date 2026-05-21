@@ -157,6 +157,12 @@ class ChartController {
         });
     }
 
+    /** Live candle array the user actually sees (oldest→newest). Kept current
+     *  in-place by setData/updateBar. Read-only for consumers. */
+    getCandleData() {
+        return this.lastCandleData;
+    }
+
     /** Replace all bars + markers (used on initial load and timeframe switch). */
     setData(bars, markers = []) {
         this.barMetadata.clear();
@@ -345,6 +351,10 @@ class ChartController {
         this.candleSeries.setData([]);
         this.volumeSeries.setData([]);
         this.candleSeries.setMarkers([]);
+        // Reset the snapshot too: consumers (ghost, trend-status) read this
+        // via getCandleData(); leaving it stale shows prior-dataset bars
+        // until the next setData() after a mode switch / reload.
+        this.lastCandleData = [];
         this.sessionOpens = [];
         this._redrawSessionLines();
         this._clearGhostOverlay();

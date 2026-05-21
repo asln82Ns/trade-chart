@@ -144,6 +144,10 @@ class LiveAssetManager:
         self._records_received = 0
         self._trades_received = 0
         self._bars_emitted_per_asset: dict[str, int] = {}
+        # Gateway ErrorMsg records (e.g. "Invalid start time", symbol-
+        # resolution failures). Bounded; surfaced via stats() so a stale
+        # replay start= is visible instead of inferred from silence.
+        self._gateway_errors: deque[str] = deque(maxlen=64)
         # Global subscriber list: every WS client receives broadcasts (alerts)
         # regardless of which asset it's currently watching.
         self._global_subscribers: list[asyncio.Queue] = []
@@ -159,6 +163,17 @@ class LiveAssetManager:
 
     def get_state(self, asset_symbol: str) -> Optional[_AssetState]:
         return self._assets.get(asset_symbol)
+
+    def recent_bars(self, asset_symbol: str) -> list[dict]:
+        """Snapshot of this asset's finalized 1s bar dicts (oldest→newest),
+        for seeding a freshly-registered alert's forming TF bar so it
+        reflects the whole in-progress bucket, not just post-registration
+        trades. Returns the inner bar dicts ({t,o,h,l,c,v,s,k})."""
+        st = self._assets.get(asset_symbol)
+        if st is None:
+            return []
+        with st.lock:
+            return [p["bar"] for p in st.bar_history]
 
     def is_ready(self) -> bool:
         return self._ready.is_set()
@@ -180,6 +195,7 @@ class LiveAssetManager:
                 "bars_emitted": self._bars_emitted_per_asset.get(a, 0),
             } for a, st in self._assets.items()}
             instrument_map = dict(self._instrument_to_asset)
+            gateway_errors = list(self._gateway_errors)
         return {
             "ready": self.is_ready(),
             "client_started": self._client_started,
@@ -187,6 +203,7 @@ class LiveAssetManager:
             "trades_received": self._trades_received,
             "instrument_count": len(instrument_map),
             "instrument_map": instrument_map,
+            "gateway_errors": gateway_errors,
             "warmup_status": self.warmup_status(),
             "assets": per_asset,
         }
@@ -432,6 +449,20 @@ class LiveAssetManager:
         elif self._records_received % 1000 == 0:
             logger.info("LiveAssetManager: %d records received, %d trades, instruments mapped: %d",
                         self._records_received, self._trades_received, len(self._instrument_to_asset))
+        # Gateway ErrorMsg: capture and surface. These can be delivered late
+        # (the SDK buffers everything until client.stop() — see Bug 3 in
+        # docs/live-feed-known-issues.md), so when they DO arrive we want
+        # the important ones loud. "Failed to resolve symbol ..." is benign
+        # and expected (the 2-digit fallback symbols don't resolve outside
+        # decade-collision years); anything else — notably "Invalid start
+        # time" — is a real gateway rejection worth flagging.
+        if "Error" in cls_name:
+            err_text = _record_text(record)
+            with self._global_lock:
+                self._gateway_errors.append(err_text)
+            if "Failed to resolve symbol" not in err_text:
+                logger.warning("LiveAssetManager: GATEWAY ERROR — %s", err_text)
+            return
         # SymbolMappingMsg comes from the gateway when it resolves a raw_symbol
         # to an instrument_id. We use that to dispatch trades to the right asset.
         if "SymbolMapping" in cls_name:

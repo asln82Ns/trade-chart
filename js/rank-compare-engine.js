@@ -58,6 +58,13 @@ class RankCompareEngine {
         this.timeframeMin = null;
         this.entryDate = null;        // YYYY-MM-DD
         this.lookbackDays = null;
+        // Initial load window (YYYY-MM-DD). Should mirror what main.js's
+        // PlaybackEngine actually loaded — on a resumed session the main
+        // window re-centers around lastViewedT, NOT around entry, so seeding
+        // from entry alone leaves us with no overlap. Falls back to an
+        // entry-centered window if main.js doesn't pass these.
+        this.loadFromDate = null;
+        this.loadToDate = null;
 
         // Per-asset state. Keys = symbols other than currentAsset.
         //   {
@@ -122,23 +129,37 @@ class RankCompareEngine {
         }
     }
 
-    /** Called on asset/tf/entry/lookback change. If anything actually
-     *  changed, we bump the generation and (if enabled) restart fetches. */
-    setContext({ asset, timeframeMin, entryDate, lookbackDays }) {
+    /** Called on asset/tf/entry/lookback/window change. If anything actually
+     *  changed, we bump the generation and (if enabled) restart fetches.
+     *
+     *  fromDate/toDate (optional) are the per-asset /load window. main.js
+     *  should pass its firstLoadedSession/lastLoadedSession so our window
+     *  matches the chart's — critical for resumed sessions where the main
+     *  window has shifted forward of the original entry. */
+    setContext({ asset, timeframeMin, entryDate, lookbackDays, fromDate, toDate }) {
         const same = asset === this.currentAsset
             && timeframeMin === this.timeframeMin
             && entryDate === this.entryDate
-            && lookbackDays === this.lookbackDays;
+            && lookbackDays === this.lookbackDays
+            && fromDate === this.loadFromDate
+            && toDate === this.loadToDate;
         if (same) return;
+        // Detect window-only change: if (asset,tf,entry,lookback) are
+        // unchanged we can keep the on-server-cached /ranks payloads in
+        // ranksCache — they're keyed by exactly those four fields.
+        const ranksContextChanged = asset !== this.currentAsset
+            || timeframeMin !== this.timeframeMin
+            || entryDate !== this.entryDate
+            || lookbackDays !== this.lookbackDays;
         this.currentAsset = asset;
         this.timeframeMin = timeframeMin;
         this.entryDate = entryDate;
         this.lookbackDays = lookbackDays;
+        this.loadFromDate = fromDate || null;
+        this.loadToDate = toDate || null;
         this.gen++;
         this.perAsset.clear();
-        // ranksCache is only valid for matching (asset,tf,entry,lookback);
-        // simplest reliable thing is to flush on every context change.
-        this.ranksCache.clear();
+        if (ranksContextChanged) this.ranksCache.clear();
         this._ranksQueue.length = 0;
         this._barsQueue.length = 0;
         this.playheadT = null;
@@ -202,11 +223,16 @@ class RankCompareEngine {
             return;
         }
 
-        this._buildPanelSkeleton();
+        // Use the window main.js loaded if it told us; otherwise fall back
+        // to entry-centered. The fallback only matters for the very first
+        // toggle-on when main.js hasn't called setContext yet — which we
+        // gate against above (we require entryDate to be set).
+        const fromDate = this.loadFromDate || addTradeDays(this.entryDate, -INITIAL_CONTEXT_DAYS);
+        const toDate = this.loadToDate || addTradeDays(this.entryDate, INITIAL_FORWARD_DAYS);
+
+        this._buildPanelSkeleton(fromDate, toDate);
 
         const myGen = this.gen;
-        const fromDate = addTradeDays(this.entryDate, -INITIAL_CONTEXT_DAYS);
-        const toDate = addTradeDays(this.entryDate, INITIAL_FORWARD_DAYS);
 
         for (const sym of this._otherAssets) {
             const state = {
@@ -396,10 +422,11 @@ class RankCompareEngine {
             <div class="rank-compare-empty">${escapeHtml(msg)}</div>`;
     }
 
-    _buildPanelSkeleton() {
+    _buildPanelSkeleton(fromDate, toDate) {
         if (!this.panel) return;
         const tfLabel = this.timeframeMin ? `${this.timeframeMin}m` : '--';
         const cur = this.currentAsset || '--';
+        const window = (fromDate && toDate) ? `${fromDate} → ${toDate}` : '';
         const rows = this._otherAssets.map(sym => `
             <tr data-sym="${escapeHtml(sym)}">
               <td class="col-asset">${escapeHtml(sym)}</td>
@@ -410,6 +437,7 @@ class RankCompareEngine {
         this.panel.innerHTML = `
             <div class="rank-compare-header">RANK COMPARE · ${escapeHtml(tfLabel)} · vs ${escapeHtml(cur)}</div>
             <div class="rank-compare-status" id="rc-status">Initializing…</div>
+            <div class="rank-compare-sub">Window: ${escapeHtml(window || '—')}</div>
             <div class="rank-compare-sub">Vol % (idx/n)  ·  Range % (idx/n)  ·  Open→Close (ticks)</div>
             <table class="rank-compare-table">
               <thead>
@@ -619,8 +647,9 @@ function renderRankCell(el, r, kind) {
         return;
     }
     const dim = r.lowN ? ' rank-low-n' : '';
+    const hot = pct >= 85 ? ' rank-hot' : '';
     el.className = `col-${kind}${dim}`;
-    el.innerHTML = `<span class="rank-val">${pct.toFixed(0)}</span><span class="rank-idx">${idx}/${r.n}</span>`;
+    el.innerHTML = `<span class="rank-val${hot}">${pct.toFixed(0)}</span><span class="rank-idx">${idx}/${r.n}</span>`;
 }
 
 function setText(el, text, cls) {

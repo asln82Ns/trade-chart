@@ -170,17 +170,22 @@ class WeatherEngine {
             const cells = horizons.map(h => {
                 const v = data.revisions?.[r]?.[h];
                 if (!v) return `<td class="ddc">—</td>`;
-                // Show whichever metric was non-null (the dominant one in
-                // the corresponding DD cell).
-                const delta = v.hdd ?? v.cdd;
+                // Show the revision of the SAME metric the DD cell above
+                // displays. `v.hdd ?? v.cdd` is WRONG: in summer HDD is 0
+                // (not null), so ?? returns 0 and the real CDD signal is
+                // never shown — the Δ column reads a constant 0. Pick the
+                // dominant metric exactly as the DD row does.
+                const key = dominantMetric(data, r, h, v);
+                const delta = v[key];
                 if (delta == null) return `<td class="ddc">—</td>`;
                 const sign = delta > 0 ? '+' : '';
-                // Tint by direction. For HDD: positive Δ means MORE heating
-                // (colder forecast revision) — render blue. Negative Δ → warm-revision → red.
-                // For CDD it's the opposite, but the H/C dominance is shown
-                // in the row above, so we just tint by sign of the dominant
-                // metric's revision: positive = blue, negative = red.
-                const tint = delta > 0 ? 'rev-up' : (delta < 0 ? 'rev-dn' : '');
+                // Tint by TEMPERATURE direction (spec §8), not raw sign:
+                //   +HDD Δ = colder forecast revision  → blue (rev-up)
+                //   +CDD Δ = warmer forecast revision  → red  (rev-dn)
+                // Flip CDD so both metrics map onto the same colder=blue /
+                // warmer=red scale. The displayed number keeps its true sign.
+                const tdir = key === 'cdd' ? -delta : delta;
+                const tint = tdir > 0 ? 'rev-up' : (tdir < 0 ? 'rev-dn' : '');
                 return `<td class="ddc ${tint}">${sign}${delta.toFixed(0)}</td>`;
             }).join('');
             rows.push(`<tr><th class="rname">${labelMap[r]}</th>${cells}</tr>`);
@@ -196,7 +201,9 @@ class WeatherEngine {
             const cells = horizons.map(h => {
                 const v = data.z_scores?.[r]?.[h];
                 if (!v) return `<td class="ddc">—</td>`;
-                const z = v.hdd ?? v.cdd;
+                // Same dominant-metric selection as the Δ row (see note).
+                const key = dominantMetric(data, r, h, v);
+                const z = v[key];
                 if (z == null) return `<td class="ddc">—</td>`;
                 const abs = Math.abs(z);
                 const cls = abs >= 3 ? 'z-extreme' : (abs >= 2 ? 'z-high' : '');
@@ -272,6 +279,23 @@ function _isCompletePanel(data) {
         if (anyRevisionPresent) break;
     }
     return anyRevisionPresent;
+}
+
+/** Which metric ('hdd'|'cdd') the DD cell displays for this region/horizon.
+ *  This MUST match the DD cell's `isHeating = hd >= cd` rule exactly so the
+ *  Δ and Z rows show the revision/Z of the number printed directly above
+ *  them. Falls back to whichever of the supplied cell's values is the
+ *  larger-magnitude non-null one when the DD cell is unavailable. */
+function dominantMetric(data, region, horizon, fallbackCell) {
+    const dd = data.regions?.[region]?.[horizon];
+    if (dd && (dd.hdd != null || dd.cdd != null)) {
+        return (dd.hdd ?? 0) >= (dd.cdd ?? 0) ? 'hdd' : 'cdd';
+    }
+    const h = fallbackCell?.hdd, c = fallbackCell?.cdd;
+    if (h == null && c == null) return 'cdd';
+    if (h == null) return 'cdd';
+    if (c == null) return 'hdd';
+    return Math.abs(h) >= Math.abs(c) ? 'hdd' : 'cdd';
 }
 
 function escapeHtml(s) {

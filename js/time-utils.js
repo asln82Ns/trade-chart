@@ -114,6 +114,26 @@ export function etDateString(unixSec) {
     return `${get('year')}-${get('month')}-${get('day')}`;
 }
 
+/** Newest weather-forecast issuance date a bar at `unixSec` could have seen.
+ *
+ *  GEFS/GFS reforecast is a once-daily 00Z-init run; the run initialized at
+ *  00:00 UTC on date D finishes operational dissemination ~04–06Z. We use a
+ *  conservative 06:00 UTC availability cutoff: a bar at UTC instant T may
+ *  only see the run for the UTC date of (T − 6h). 06:00 UTC = 02:00 ET in
+ *  summer (EDT) / 01:00 ET in winter (EST); defining the cutoff in UTC keeps
+ *  it DST-stable. This prevents the overnight-Globex hindsight leak — a
+ *  session's pre-dawn bars must not display that day's forecast before it
+ *  was actually published. Returns "YYYY-MM-DD" (UTC).
+ *  See docs/weather-data-spec.md §7. */
+export const WEATHER_ISSUANCE_CUTOFF_SEC = 6 * 3600;
+export function weatherIssuanceDate(unixSec) {
+    const d = new Date((unixSec - WEATHER_ISSUANCE_CUTOFF_SEC) * 1000);
+    const y = d.getUTCFullYear();
+    const m = String(d.getUTCMonth() + 1).padStart(2, '0');
+    const day = String(d.getUTCDate()).padStart(2, '0');
+    return `${y}-${m}-${day}`;
+}
+
 /** Convert a "YYYY-MM-DDTHH:MM" local-ET string to a unix-second UTC timestamp. */
 export function etLocalStringToUnix(localStr) {
     if (!localStr) return null;

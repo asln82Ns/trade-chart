@@ -58,6 +58,25 @@ class WeatherService:
         (self.db_path.parent / "raw").mkdir(parents=True, exist_ok=True)
         self._init_schema()
         self._ingest_lock = threading.Lock()
+        # Memo cache for _load_state_metric. The Z-score baseline
+        # (_historical_revisions) rescans every prior forecast_date on every
+        # /weather request — with the full 2010-2019 backfill that is ~970
+        # date×metric loads per request, redone from scratch and re-redone by
+        # every concurrent/subsequent request in a session. Past issuance
+        # vintages are immutable (spec §3 sources B/E: "once ingested, never
+        # refetched"), so caching them is correctness-neutral. Keyed by
+        # (forecast_date_iso, metric); today's (mutable) vintage is never
+        # cached. dict get/set is atomic under the GIL — worst case is
+        # redundant compute, never corruption.
+        self._state_metric_cache: Dict[Tuple[str, str], Dict[str, Dict[date, float]]] = {}
+        # Memo cache for region-aggregated dailies, keyed by
+        # (forecast_date_iso, metric, region). _historical_revisions otherwise
+        # recomputes this population-weighted aggregation for EVERY prior
+        # forecast_date AND re-does it once per horizon (6×) — the dominant
+        # cost once the SQL loads are cached. Same immutability guarantee as
+        # _state_metric_cache (past vintages never change), so caching is
+        # correctness-neutral; today's vintage is never cached.
+        self._region_daily_cache: Dict[Tuple[str, str, str], Dict[date, float]] = {}
 
     # ---- Schema --------------------------------------------------------
 
@@ -392,14 +411,27 @@ class WeatherService:
     def _load_state_metric(
         self, forecast_date: date, metric: str,
     ) -> Dict[str, Dict[date, float]]:
-        """{state: {target_date: value}} for one (vintage, metric)."""
+        """{state: {target_date: value}} for one (vintage, metric).
+
+        Memoized for past (immutable) vintages — see _state_metric_cache.
+        The returned dict is shared; callers treat it as read-only (none
+        mutate it today).
+        """
+        fd_iso = forecast_date.isoformat()
+        cacheable = forecast_date < _today_utc()
+        key = (fd_iso, metric)
+        if cacheable:
+            hit = self._state_metric_cache.get(key)
+            if hit is not None:
+                return hit
+
         prefix = "state:"
         with self._conn() as conn:
             rows = conn.execute(
                 "SELECT region, target_date, value "
                 "FROM forecast_daily "
                 "WHERE forecast_date=? AND metric=? AND region LIKE ?",
-                (forecast_date.isoformat(), metric, prefix + "%"),
+                (fd_iso, metric, prefix + "%"),
             ).fetchall()
         out: Dict[str, Dict[date, float]] = {}
         for r in rows:
@@ -409,6 +441,27 @@ class WeatherService:
             except ValueError:
                 continue
             out.setdefault(state, {})[d] = float(r["value"])
+        if cacheable:
+            self._state_metric_cache[key] = out
+        return out
+
+    def _region_dailies_for(
+        self, forecast_date: date, metric: str, region: str,
+    ) -> Dict[date, float]:
+        """Population-weighted {target_date: value} for one
+        (vintage, metric, region). Memoized for past (immutable) vintages.
+        Identical output to `_region_dailies(region, _load_state_metric(...))`,
+        just computed once instead of per-request × per-horizon."""
+        fd_iso = forecast_date.isoformat()
+        cacheable = forecast_date < _today_utc()
+        key = (fd_iso, metric, region)
+        if cacheable:
+            hit = self._region_daily_cache.get(key)
+            if hit is not None:
+                return hit
+        out = _region_dailies(region, self._load_state_metric(forecast_date, metric))
+        if cacheable:
+            self._region_daily_cache[key] = out
         return out
 
     def _compute_revisions(
@@ -421,13 +474,16 @@ class WeatherService:
     ) -> Dict[str, Dict[str, Dict[str, Optional[float]]]]:
         """{region: {horizon_label: {hdd: Δ, cdd: Δ}}} apples-to-apples."""
         # Aggregate to region dailies for both vintages, then revision = N-day
-        # sum diff anchored on identical target dates.
+        # sum diff anchored on identical target dates. Uses the cached
+        # accessor (today_*/y_* args retained for signature stability — they
+        # come from the same cached _load_state_metric).
+        yday = forecast_date - timedelta(days=1)
         out: Dict[str, Dict[str, Dict[str, Optional[float]]]] = {}
         for region in REGIONS:
-            today_h = _region_dailies(region, today_hdd)
-            today_c = _region_dailies(region, today_cdd)
-            yest_h = _region_dailies(region, y_hdd)
-            yest_c = _region_dailies(region, y_cdd)
+            today_h = self._region_dailies_for(forecast_date, "hdd", region)
+            today_c = self._region_dailies_for(forecast_date, "cdd", region)
+            yest_h = self._region_dailies_for(yday, "hdd", region)
+            yest_c = self._region_dailies_for(yday, "cdd", region)
 
             per_horizon: Dict[str, Dict[str, Optional[float]]] = {}
             for n in HORIZONS:
@@ -495,34 +551,27 @@ class WeatherService:
 
         baselines: Dict[Tuple[str, str, str], List[float]] = {}
         prev_date: Optional[date] = None
-        prev_hdd: Optional[Dict[str, Dict[date, float]]] = None
-        prev_cdd: Optional[Dict[str, Dict[date, float]]] = None
 
         for r in rows:
             try:
                 d = datetime.strptime(r["forecast_date"], "%Y-%m-%d").date()
             except ValueError:
                 continue
-            if prev_date is None or prev_hdd is None:
-                # Need TWO consecutive vintages to compute one revision; skip
-                # the first iteration and just stash for next loop.
+            # Need TWO consecutive vintages for one revision. The cached
+            # accessor handles loading/aggregation (and dedupes across the
+            # cur/prev double-use and across requests), so we only track the
+            # previous date here.
+            if prev_date is None or d - prev_date != timedelta(days=1):
                 prev_date = d
-                prev_hdd = self._load_state_metric(d, "hdd")
-                prev_cdd = self._load_state_metric(d, "cdd")
                 continue
-
-            # Skip non-consecutive days (we can only compute true day-over-day
-            # revisions when both vintages are adjacent).
-            if d - prev_date != timedelta(days=1):
-                prev_date = d
-                prev_hdd = self._load_state_metric(d, "hdd")
-                prev_cdd = self._load_state_metric(d, "cdd")
-                continue
-
-            cur_hdd = self._load_state_metric(d, "hdd")
-            cur_cdd = self._load_state_metric(d, "cdd")
 
             for region in REGIONS:
+                # Compute each (date, metric, region) aggregation ONCE — not
+                # once per horizon (was 6× redundant) and not per request.
+                cur_h = self._region_dailies_for(d, "hdd", region)
+                pre_h = self._region_dailies_for(prev_date, "hdd", region)
+                cur_c = self._region_dailies_for(d, "cdd", region)
+                pre_c = self._region_dailies_for(prev_date, "cdd", region)
                 for n in HORIZONS:
                     label = HORIZON_LABELS[n]
                     if n == 1:
@@ -531,20 +580,14 @@ class WeatherService:
                     else:
                         target_start = d + timedelta(days=1)
                         window = n
-                    cur_h_daily = _region_dailies(region, cur_hdd)
-                    pre_h_daily = _region_dailies(region, prev_hdd)
-                    cur_c_daily = _region_dailies(region, cur_cdd)
-                    pre_c_daily = _region_dailies(region, prev_cdd)
-                    rh = revision_n_day_sum(cur_h_daily, pre_h_daily,
-                                            target_start, window)
-                    rc = revision_n_day_sum(cur_c_daily, pre_c_daily,
-                                            target_start, window)
+                    rh = revision_n_day_sum(cur_h, pre_h, target_start, window)
+                    rc = revision_n_day_sum(cur_c, pre_c, target_start, window)
                     if rh is not None:
                         baselines.setdefault((region, label, "hdd"), []).append(rh)
                     if rc is not None:
                         baselines.setdefault((region, label, "cdd"), []).append(rc)
 
-            prev_date, prev_hdd, prev_cdd = d, cur_hdd, cur_cdd
+            prev_date = d
 
         return baselines
 
@@ -601,9 +644,17 @@ class WeatherService:
 
     def _build_ao_panel(self, forecast_date: date) -> Dict[str, Any]:
         """Current AO + day-over-day revision + Z-score on revisions."""
+        # NO-HINDSIDE BOUND: the observed AO for day D is that day's realized
+        # atmospheric state — it does not exist until D is over (NOAA CPC
+        # publishes it ~1 day later). Using `target_date <= D` leaked the
+        # replayed day's own realized vortex reading. `< D` clamps to the
+        # newest value that is unambiguously in the past at any tick on D
+        # (D−1). The panel itself is only shown for D once the bar clock
+        # passes 06:00Z D (weatherIssuanceDate), by which time D−1's
+        # reanalysis-grade AO is derivable. See weather-data-spec.md §7.
         with self._conn() as conn:
             obs_row = conn.execute(
-                "SELECT value FROM ao_daily WHERE target_date<=? AND kind='observed' "
+                "SELECT value FROM ao_daily WHERE target_date<? AND kind='observed' "
                 "ORDER BY target_date DESC LIMIT 1",
                 (forecast_date.isoformat(),),
             ).fetchone()

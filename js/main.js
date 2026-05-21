@@ -10,10 +10,11 @@ import RankEngine from './rank-engine.js';
 import GhostEngine from './ghost-engine.js';
 import WeatherEngine from './weather-engine.js';
 import RankCompareEngine from './rank-compare-engine.js';
+import TrendStatusEngine from './trend-status-engine.js';
 import * as AssetCfg from './asset-config.js';
 import * as ReplayStore from './replay-store.js';
 import { computeMetrics, equityCurve } from './metrics.js';
-import { TIMEFRAMES, formatEt, etDateString, etLocalStringToUnix } from './time-utils.js';
+import { TIMEFRAMES, formatEt, etDateString, etLocalStringToUnix, weatherIssuanceDate } from './time-utils.js';
 
 const CONTEXT_DAYS = 10;     // weekdays of pre-entry history to load up front
 const FORWARD_DAYS_INITIAL = 5;
@@ -255,6 +256,8 @@ class App {
             weatherPanel: document.getElementById('weatherPanel'),
             rankCompareBtn: document.getElementById('rankCompareBtn'),
             rankComparePanel: document.getElementById('rankComparePanel'),
+            trendStatusBtn: document.getElementById('trendStatusBtn'),
+            trendStatusPanel: document.getElementById('trendStatusPanel'),
         };
 
         // Weather panel: opt-in via toggle button; updates on bar hover and
@@ -266,6 +269,10 @@ class App {
         this.rankCompare = new RankCompareEngine(this.api, this.el.rankComparePanel);
 
         this.chart = new ChartController(this.el.chartContainer);
+        // Trend-status panel: pure-local buy/sell-strength strips computed off
+        // the chart's live candle array. No fetch — just reads getCandleData().
+        this.trendStatus = new TrendStatusEngine(
+            this.el.trendStatusPanel, () => this.chart.getCandleData());
         this.simulator = new TradeSimulator();
         this.engine = new PlaybackEngine(this.chart, this.simulator);
         this.engine.maxSessions = MAX_LOADED_SESSIONS;
@@ -288,10 +295,21 @@ class App {
                 // Rank-compare panel tracks playhead independently of hover —
                 // it has its own bucket logic and prefetch watermark.
                 if (this.rankCompare) this.rankCompare.setPlayhead(tick.t);
+                if (this.trendStatus) this.trendStatus.refresh();
             }
             // Bar-derived readouts (Time/OHLC/Volume/Contract/Ranks/Risk): only
             // overwrite if the user isn't inspecting a historical bar.
             if (this.chart.isHovering()) return;
+            // Not hovering: the weather panel follows the playhead, gated by
+            // the latest tick's UTC time so it never shows a forecast the
+            // replayed "now" couldn't have seen yet. setAnchor keeps the
+            // hover-end snap-back target correct; show() advances the display
+            // across day boundaries (both dedupe on unchanged date).
+            if (this.weather && this.weather.enabled && this._lastTickT != null) {
+                const wd = weatherIssuanceDate(this._lastTickT);
+                this.weather.setAnchor(wd);
+                this.weather.show(wd);
+            }
             this._updateBarInfo(formingBar);
             if (tick && tick.k) this.el.currentContract.textContent = tick.k;
             if (formingBar) this._updateRankInfo(formingBar, this._lastTickT);
@@ -321,6 +339,7 @@ class App {
                 this._lastTickT = tick.t;
                 this.el.tickTime.textContent = formatEt(tick.t, { label: true, withSeconds: true });
             }
+            if (this.trendStatus) this.trendStatus.refresh();
             if (this.chart.isHovering()) return;
             if (formingBar) this._updateBarInfo(formingBar);
             if (tick && tick.k) this.el.currentContract.textContent = tick.k;
@@ -357,15 +376,19 @@ class App {
             this._updateRankInfo(data, this._lastTickT);
             this._updateDollarRisk(data);
             this._updateGhostInfo(data.ghost);
-            // Weather panel: switch to the hovered bar's session date.
-            // If sessionDate is missing (shouldn't happen for spliced bars
-            // but defensive), fall back to the bar time → ET date.
-            if (this.weather && this.weather.enabled) {
-                const d = data.sessionDate || (data.time ? etDateString(data.time) : null);
-                if (d) this.weather.show(d);
+            // Weather panel: show the newest forecast issuance the hovered
+            // bar could actually have seen — gated by the bar's UTC time
+            // (06:00Z availability cutoff), NOT its session date. Keying on
+            // session date leaked hindsight: a session's overnight-Globex
+            // bars would display that day's 00Z run hours before it was
+            // published. See weatherIssuanceDate / spec §7.
+            if (this.weather && this.weather.enabled && data.time) {
+                this.weather.show(weatherIssuanceDate(data.time));
             }
             // Rank-compare panel: hover overrides playhead bucket.
             if (this.rankCompare) this.rankCompare.setHoverBar(data.time);
+            // Trend-status panel: recompute as if the hovered bar were latest.
+            if (this.trendStatus) this.trendStatus.setHoverBar(data.time);
         });
         this.chart.setHoverEndCallback(() => {
             // Cursor left a bar: snap the bar-info row back to the current
@@ -382,6 +405,8 @@ class App {
             }
             // Rank-compare panel: drop hover override → snap back to playhead.
             if (this.rankCompare) this.rankCompare.setHoverBar(null);
+            // Trend-status panel: snap back to the live/forming bar.
+            if (this.trendStatus) this.trendStatus.setHoverBar(null);
         });
 
         this.el.assetSelect.addEventListener('change', (e) => {
@@ -424,11 +449,18 @@ class App {
                                             this._liveEntrySession, this._readLookbackDays());
                 }
             }
+            // Bars were rebuilt at the new timeframe; drop any stale hover
+            // index and repaint (matters while paused — no tick to self-correct).
+            if (this.trendStatus) {
+                this.trendStatus.setHoverBar(null);
+                this.trendStatus.refresh();
+            }
         });
         this.el.loadBtn.addEventListener('click', () => this._load());
         this.el.ghostBtn.addEventListener('click', () => this._toggleGhost());
         this.el.weatherToggleBtn.addEventListener('click', () => this._toggleWeather());
         this.el.rankCompareBtn.addEventListener('click', () => this._toggleRankCompare());
+        this.el.trendStatusBtn.addEventListener('click', () => this._toggleTrendStatus());
         // Filter / percentile changes refetch from the server (raw cache is
         // shared across filter combos, so this is fast after the first build).
         // Anchor change is render-side only — no fetch needed.
@@ -1797,10 +1829,26 @@ class App {
         this.el.rankCompareBtn.classList.toggle('active', next);
     }
 
+    /** Trend-status panel toggle. Works in both replay and live — it only
+     *  needs the chart's candle array, which both modes populate. */
+    _toggleTrendStatus() {
+        if (!this.trendStatus) return;
+        const next = !this.trendStatus.enabled;
+        this.trendStatus.setEnabled(next);
+        this.el.trendStatusBtn.textContent = `Trend: ${next ? 'On' : 'Off'}`;
+        this.el.trendStatusBtn.classList.toggle('active', next);
+    }
+
     /** Push the current loaded-replay context into the rank-compare engine.
      *  No-op when not in replay mode or before any /load has succeeded.
      *  Safe to call even when the panel is toggled off — the engine just
-     *  records the context and uses it on the next toggle-on. */
+     *  records the context and uses it on the next toggle-on.
+     *
+     *  Critically: pass our actual loaded window. On a resumed session
+     *  main.js's _load shifts fromDate/toDate forward to center on
+     *  lastViewedT — if we don't tell the rank-compare engine, its tapes
+     *  cover entry-date times that don't overlap the chart, and every
+     *  hover renders as "—". */
     _refreshRankCompareContext() {
         if (!this.rankCompare) return;
         if (this.mode !== 'replay') return;
@@ -1812,6 +1860,8 @@ class App {
             timeframeMin: tf,
             entryDate: this.currentEntryDate,
             lookbackDays: this._readLookbackDays(),
+            fromDate: this.firstLoadedSession,
+            toDate: this.lastLoadedSession,
         });
     }
 

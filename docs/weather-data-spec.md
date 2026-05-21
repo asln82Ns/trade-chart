@@ -456,14 +456,55 @@ markets are mid-session.
 
 ### Replay mode
 
-- User hovers bar at session date `S`
-- Panel shows `forecast_date = S`, `target_date ∈ [S..S+13]`
-- ALL data shown was issued **on or before** S. Hindsight values never leak in.
-- Day-over-day revisions compare S's view to S−1's view of the same target dates
-- If forecast data for date S is not yet ingested (Phase 1 with no vintage
+- The panel is keyed by the **hovered (or playhead) bar's UTC timestamp**,
+  NOT its session-date label. The displayed issuance date is
+  `D = utc_date(bar_time − 6h)` (see "Issuance availability gate" below).
+- Panel shows `forecast_date = D`, `target_date ∈ [D..D+13]`
+- ALL data shown was knowable **at the bar's exact instant in history**.
+  Hindsight values never leak in.
+- Day-over-day revisions compare D's view to D−1's view of the same target
+  dates (both issued ≤ D, so both public by the time the bar's clock reaches
+  06:00Z D).
+- If forecast data for date D is not yet ingested (Phase 1 with no vintage
   backfill), the panel shows the message
   `"vintage forecast data not ingested for this date — see weather-data-spec.md §10"`
   and the cells render `—`. No partial/spurious data is shown.
+
+### Issuance availability gate (no-hindsight, intraday-precise)
+
+The session-date label is insufficient for hindsight safety: a CME energy
+session labeled `S` opens the prior evening on Globex (~22:00Z S−1), so its
+overnight bars trade *before* the S-issuance model run is public. Keying on
+the session date would display that run hours before it existed.
+
+**Rule:** every forecast source here (GEFS Reforecast v12, GFS deterministic,
+Open-Meteo Previous Runs) is a once-daily **00Z-init** run whose products
+finish operational dissemination ~04:00–06:00 UTC. We apply a conservative
+**06:00 UTC availability cutoff**: a bar at UTC instant `T` may only display
+the run for UTC date `D = utc_date(T − 6h)`. Implemented as
+`weatherIssuanceDate()` in `js/time-utils.js`; applied to both the hover path
+and the playback/no-hover (playhead) path in `js/main.js`. 06:00 UTC =
+02:00 ET in summer (EDT) / 01:00 ET in winter (EST); the cutoff is defined in
+UTC so it is DST-stable. It is intentionally ~30–90 min later than the real
+dissemination window so the gate never leans optimistic.
+
+**Observed (realized) data — AO index.** Forecast tables store only forecast
+vintages (lead-0 is the run's own analysis, available at run-publish time —
+still not hindsight). The single realized series is the NOAA CPC daily
+**observed AO**. The observed AO for day `D` is that day's realized
+atmospheric state and does not exist until `D` is over (CPC publishes it ~1
+day later). The panel therefore clamps observed AO to `target_date < D`
+(strict): the newest value shown on any tick of day `D` is `D−1`, which is
+unambiguously in the past. (`service.py:_build_ao_panel`.)
+
+**Known residual (does not affect historical replay).** The GFS-derived AO
+*forecast* file is recent-only (~120 days from the live fetch), so for
+historical replay (e.g. 2012) the AO Δ/Z cells render `—` — no data, no
+leak. For live / very-recent dates, if a particular AO-forecast vintage
+corresponds to a 12Z (rather than 00Z) model run, it could in principle be
+shown up to ~6h before that run published. AO is a secondary vortex proxy
+and this never affects pre-(today−120d) replay; flagged here for audit
+completeness rather than silently assumed safe.
 
 ### Era boundary at 2020-01-01 (Phase 2 concern)
 
@@ -624,3 +665,39 @@ state, with a brief diff entry in Section 11.
   `staging/` dir holding ≤1 file (~60 MB) at a time, wiped each run — disk
   footprint is negligible. Resumable; `--force` re-extracts existing cycles
   (for switching member modes).
+- 2026-05-16: Hindsight-safety + display-correctness pass (§4.5, §7).
+  (1) **Δ / Z metric-selection bug fixed** (`js/weather-engine.js`): the
+  revision and Z cells used `v.hdd ?? v.cdd`, which in summer returned the
+  HDD revision of `0.0` (HDD is 0, not null) and never showed the real CDD
+  signal — the Δ column read a constant `0`. Now selects the *same* metric
+  the DD cell displays via the identical `isHeating = hd ≥ cd` rule. The Δ
+  color tint was also corrected to follow temperature direction
+  (colder = blue, warmer = red) for both metrics per §8; the old code was
+  correct for HDD but inverted for CDD. Backend math was already correct.
+  (2) **Intraday issuance gate added** (§7 "Issuance availability gate"):
+  the replay panel now keys forecast issuance off the bar's UTC timestamp
+  with a 06:00 UTC availability cutoff (`weatherIssuanceDate()`), not the
+  session-date label — closing the overnight-Globex leak where a session's
+  pre-dawn bars showed that day's not-yet-published 00Z run.
+  (3) **Observed-AO hindsight leak fixed** (`service.py:_build_ao_panel`):
+  `target_date <= D` → `< D`. The observed AO for day D is that day's
+  realized state (CPC publishes ~1 day later); the old query surfaced the
+  replayed day's own realized vortex reading. Verified against the cache
+  (2012-07-09: was showing D's AO −0.657, now shows D−1's −1.212).
+  Weather panel also bottom-anchored 10px from the viewport edge (was
+  top:220 / 20px design margin) so it sits lower regardless of content
+  height. `tests/test_weather.py` 12/12 green.
+- 2026-05-16: Performance — `/weather` latency fix (no metric change). After
+  the full 2010-2019 GEFS backfill (3666 issuance dates, 1.9 GB DB), the
+  Z-score baseline (`_historical_revisions`) was rescanning every prior
+  forecast_date (~970 for mid-2012) from raw SQL on every request, and
+  re-aggregating region dailies once per horizon (6× redundant) — ~37 s per
+  cold request, redone by every concurrent/subsequent request (≈6 min wall
+  under the panel's playhead-follow firing 8 parallel dates). Added two
+  memo caches on immutable past vintages (spec §3 sources B/E guarantee
+  immutability): `_state_metric_cache` (per forecast_date×metric SQL load)
+  and `_region_daily_cache` (per forecast_date×metric×region aggregation);
+  lifted aggregation out of the per-horizon loop. Cold first call 37 s →
+  ~17 s; every subsequent distinct date ~1 s (was ~14–37 s). Output
+  byte-identical (national 3D cdd 42.0602 unchanged; 12/12 tests green).
+  Today's (mutable) vintage is never cached.

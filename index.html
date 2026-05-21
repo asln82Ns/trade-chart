@@ -23,6 +23,7 @@
                 <button class="mode-btn" id="modeLiveBtn" data-mode="live">Live</button>
                 <button id="weatherToggleBtn" class="weather-toggle-btn" title="Toggle weather panel (HDD/CDD per region, basin freeze risk, polar vortex). See docs/weather-data-spec.md.">Weather: Off</button>
                 <button id="rankCompareBtn" class="rank-compare-btn" title="Toggle the rank-compare panel: shows Vol rank, Range rank, and open-to-close (in ticks) for every other asset at the current timeframe and playback position. Replay only.">Rank Compare: Off</button>
+                <button id="trendStatusBtn" class="trend-status-btn" title="Toggle the trend status panel: per-window strips of buy/sell strength. A Level-3 bar closes at/beyond the prior bar's high (green/buy) or low (red/sell); everything else is neutral. Leftmost block = most recent bar; hover a bar to recompute as if it were the latest.">Trend: Off</button>
 
                 <span id="alertsSection" class="alerts-section" style="display:none;">
                     <span class="alerts-divider">|</span>
@@ -191,6 +192,7 @@
         <div id="chartContainer" class="chart-container"></div>
         <div id="weatherPanel" class="weather-panel" hidden></div>
         <div id="rankComparePanel" class="rank-compare-panel" hidden></div>
+        <div id="trendStatusPanel" class="trend-status-panel" hidden></div>
     </div>
 
     <div id="tradeLogModal" class="modal">

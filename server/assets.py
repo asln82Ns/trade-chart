@@ -63,6 +63,16 @@ ASSETS = {
         "price_decimals": 0,
         "min_qty_increment": 0.1,
     },
+    "NKD": {
+        "name": "Nikkei 225 (USD)",
+        "description": "CME Nikkei 225 Dollar",
+        "dataset": "GLBX.MDP3",
+        "tick_size": 5.0,              # 5.00 index points = $25.00 per contract
+        "point_value": 5.0,            # $5.00 per index point
+        "month_codes": "HMUZ",         # quarterly March cycle
+        "price_decimals": 0,
+        "min_qty_increment": 0.1,      # MNK (Micro Nikkei USD) is 1/10 of NKD
+    },
     "GC": {
         "name": "Gold",
         "description": "COMEX Gold",
@@ -172,6 +182,16 @@ ASSETS = {
         "month_codes": "HMUZ",
         "price_decimals": 4,
         "min_qty_increment": 1.0,
+    },
+    "6A": {
+        "name": "Australian Dollar",
+        "description": "CME Australian Dollar",
+        "dataset": "GLBX.MDP3",
+        "tick_size": 0.0001,           # $0.0001/AUD = $10.00 per 100,000 AUD
+        "point_value": 100000.0,
+        "month_codes": "HMUZ",
+        "price_decimals": 4,
+        "min_qty_increment": 0.1,      # M6A (Micro AUD) is 1/10 of 6A
     },
 }
 

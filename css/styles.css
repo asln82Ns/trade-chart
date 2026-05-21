@@ -1037,9 +1037,13 @@ button:disabled {
 .weather-panel {
     position: fixed;
     left: 12px;
-    top: 220px;
+    /* Bottom-anchored: pin 10px from the screen bottom (half the former
+       20px design margin → panel sits lower, no variable float-up gap when
+       content is short). Grows upward; max-height keeps the top edge no
+       higher than the former y=220 so it never overlaps the controls. */
+    bottom: 10px;
     width: 480px;
-    max-height: calc(100vh - 240px);
+    max-height: calc(100vh - 230px);
     overflow-y: auto;
     background: #1f1f1f;
     border: 1px solid #444;
@@ -1159,11 +1163,13 @@ button:disabled {
     cursor: not-allowed;
 }
 
-/* Stacks below the weather panel when both are open. */
+/* Anchored to the bottom of the viewport (vs the weather panel which is
+   anchored to the top) — keeps the panel near the action and gives a
+   stable bottom gap regardless of viewport height or row count. */
 .rank-compare-panel {
     position: fixed;
     left: 12px;
-    top: 220px;
+    bottom: 60px;
     width: 320px;
     max-height: calc(100vh - 240px);
     overflow-y: auto;
@@ -1231,6 +1237,7 @@ button:disabled {
 .rank-compare-table .col-oc    { width: auto; }
 
 .rank-compare-table .rank-val { color: #d0d0d0; }
+.rank-compare-table .rank-val.rank-hot { color: #f0625b; font-weight: bold; }
 .rank-compare-table .rank-idx { color: #777; font-size: 10px; margin-left: 3px; }
 .rank-compare-table .rank-low-n { color: #777; }     /* dim if n < threshold */
 .rank-compare-table .rank-missing { color: #555; }
@@ -1242,6 +1249,132 @@ button:disabled {
 .rank-compare-table .oc-zero { color: #888; }
 
 .rank-compare-empty {
+    color: #999;
+    font-size: 11px;
+    padding: 8px 4px;
+}
+
+/* ---------------- Trend Status panel ---------------- */
+.trend-status-btn {
+    margin-left: 6px;
+    padding: 6px 12px;
+    background: #2a2a2a;
+    border: 1px solid #444;
+    border-radius: 4px;
+    color: #e0e0e0;
+    font-size: 13px;
+    cursor: pointer;
+}
+.trend-status-btn:hover { background: #3a3a3a; }
+.trend-status-btn.active {
+    background: #1f4d6b;
+    border-color: #4a90c2;
+    color: #fff;
+}
+
+/* Bottom-right corner: deliberately on the opposite side from the
+   bottom-left rank-compare panel so the two never overlap regardless of
+   which combination is toggled on. */
+.trend-status-panel {
+    position: fixed;
+    right: 12px;
+    bottom: 60px;
+    width: 300px;
+    background: #1f1f1f;
+    border: 1px solid #444;
+    border-radius: 6px;
+    padding: 10px 12px;
+    font-family: 'Consolas', 'Menlo', 'Courier New', monospace;
+    font-size: 12px;
+    color: #d0d0d0;
+    z-index: 50;
+}
+.trend-status-panel[hidden] { display: none !important; }
+
+.trend-status-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    font-weight: bold;
+    color: #fff;
+    border-bottom: 1px solid #444;
+    padding-bottom: 6px;
+    margin-bottom: 6px;
+    letter-spacing: 0.5px;
+}
+.ts-config { display: flex; gap: 6px; }
+.ts-cfg-label {
+    color: #888;
+    font-weight: normal;
+    font-size: 10px;
+    display: flex;
+    align-items: center;
+    gap: 2px;
+}
+.ts-window-input {
+    width: 34px;
+    padding: 1px 2px;
+    background: #2a2a2a;
+    border: 1px solid #444;
+    border-radius: 3px;
+    color: #e0e0e0;
+    font-size: 11px;
+    font-family: inherit;
+}
+
+.trend-status-legend {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    color: #888;
+    font-size: 10px;
+    margin-bottom: 8px;
+}
+.trend-status-legend .ts-block { margin-right: 1px; }
+
+.trend-status-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin: 5px 0;
+}
+.ts-label {
+    width: 52px;
+    flex: none;
+    color: #aaa;
+    font-size: 11px;
+}
+.ts-strip {
+    flex: 1 1 auto;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 1px;
+    min-width: 0;
+}
+.ts-block {
+    display: inline-block;
+    width: 4px;
+    height: 14px;
+    border-radius: 1px;
+    box-sizing: border-box;
+}
+.ts-greenL3 { background: #26a69a; }
+.ts-redL3   { background: #ef5350; }
+.ts-neutral { background: #f0f0f0; border: 1px solid #999; }
+
+.ts-counts {
+    flex: none;
+    display: flex;
+    gap: 6px;
+    font-variant-numeric: tabular-nums;
+    font-size: 11px;
+}
+.ts-counts small { color: #777; font-size: 9px; }
+.ts-c-g { color: #26a69a; }
+.ts-c-r { color: #ef5350; }
+.ts-c-w { color: #ccc; }
+
+.trend-status-empty {
     color: #999;
     font-size: 11px;
     padding: 8px 4px;

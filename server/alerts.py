@@ -182,12 +182,19 @@ class AlertManager:
         self._loading: set[tuple] = set()
         # broadcast(payload) → fans out to every WS client's queue.
         self._broadcast: Optional[Callable[[dict], None]] = None
+        # bar_backfill(asset) → list of finalized 1s bar dicts (oldest→newest).
+        # Used to seed a new alert's forming bar with the in-progress bucket
+        # so an alert created mid-bucket is accurate immediately.
+        self._bar_backfill: Optional[Callable[[str], list]] = None
 
     def set_rank_loader(self, loader) -> None:
         self._rank_data_loader = loader
 
     def set_broadcast(self, broadcast) -> None:
         self._broadcast = broadcast
+
+    def set_bar_backfill(self, backfill) -> None:
+        self._bar_backfill = backfill
 
     def register(self, asset: str, metric: str, op: str, threshold: float,
                  tf: int, lookback: int) -> dict:
@@ -199,6 +206,14 @@ class AlertManager:
             raise ValueError("threshold must be 0..100")
         alert_id = uuid4().hex[:12]
         alert = _Alert(alert_id, asset, metric, op, threshold, tf, lookback)
+        # Seed the forming bar from the in-progress TF bucket BEFORE the
+        # alert is published to _alerts, so the live worker thread's
+        # on_finalized_bar cannot mutate alert.forming while it is being
+        # seeded. Without this, an alert created mid-bucket accumulates
+        # volume/range only from trades seen AFTER registration — badly
+        # under-counting the bucket (volume scales ~linearly with elapsed
+        # time) until the next bucket boundary self-corrects it.
+        self._backfill_forming(alert)
         with self._lock:
             self._alerts[alert_id] = alert
         # Kick the rank load into a background thread so the HTTP response
@@ -276,6 +291,29 @@ class AlertManager:
         logger.info("alert rank load: %s tf=%dm lookback=%dd → %s",
                     asset, tf, lookback,
                     "ok" if data else "no data")
+
+    def _backfill_forming(self, alert: _Alert) -> None:
+        """Pre-fill alert.forming with the current TF bucket's already-seen
+        1s bars so an alert registered mid-bucket reflects the whole bucket.
+        Only the in-progress bucket is replayed (cheap — at most one TF bar
+        of 1s bars); earlier history does not affect the forming bar. Any
+        failure degrades safely to the old behavior (no seeding)."""
+        if self._bar_backfill is None:
+            return
+        try:
+            bars = self._bar_backfill(alert.asset)
+        except Exception as e:
+            logger.warning("alert backfill fetch failed for %s: %s", alert.asset, e)
+            return
+        if not bars:
+            return
+        try:
+            cutoff = _floor_to_tf(int(bars[-1]["t"]), alert.tf)
+            for b in bars:
+                if int(b["t"]) >= cutoff:
+                    alert.forming.feed(b)
+        except Exception as e:
+            logger.warning("alert backfill replay failed for %s: %s", alert.asset, e)
 
     def on_finalized_bar(self, asset: str, bar_1s: dict) -> None:
         """Called from the live worker thread on every final 1s bar."""

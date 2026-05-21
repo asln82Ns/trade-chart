@@ -17,7 +17,8 @@
       "Bash(curl -s \"https://noaa-gfs-bdp-pds.s3.amazonaws.com/?list-type=2&prefix=gfs.20210115/&delimiter=/&max-keys=20\")",
       "Bash(curl -s \"https://noaa-gfs-bdp-pds.s3.amazonaws.com/?list-type=2&prefix=gfs.20210115/00/&max-keys=12\")",
       "Bash(curl -s \"https://noaa-gfs-bdp-pds.s3.amazonaws.com/?list-type=2&prefix=gfs.20250115/00/atmos/&max-keys=6\")",
-      "Bash(curl -s \"https://noaa-gfs-bdp-pds.s3.amazonaws.com/?list-type=2&prefix=gfs.2021&delimiter=/&max-keys=5\")"
+      "Bash(curl -s \"https://noaa-gfs-bdp-pds.s3.amazonaws.com/?list-type=2&prefix=gfs.2021&delimiter=/&max-keys=5\")",
+      "WebSearch"
     ]
   }
 }
