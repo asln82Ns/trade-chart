@@ -13,3 +13,10 @@ weather/_pychache_/
 *.db-shm
 *.db-wal
 *.parquet
+
+# Debug artifacts — faulthandler/thread dumps. These leak local filesystem
+# paths (incl. the Windows username) and have no value in a public repo.
+thread_dump_*.txt
+
+# Per-developer Claude Code permissions; not meant to be shared.
+.claude/settings.local.json

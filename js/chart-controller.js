@@ -89,6 +89,13 @@ class ChartController {
                                         // dipping back into the engine
         this.markers = [];             // current marker list
         this.onHoverCallback = null;
+        // Distinct non-null contract symbols across every displayed bar
+        // (historical/prime via setData + live via updateBar). Insertion order
+        // is chronological. Drives the "data spans >1 contract" UI flag — this
+        // is the only signal that also catches the live prime→live seam, which
+        // produces no roll marker (markers come solely from the splice rolls).
+        this.contractsOnChart = new Set();
+        this.onContractsChangeCallback = null;
         this.assetCfg = null;
         this.ghostEngine = null;       // optional GhostEngine; if set, ghost overlay
                                         // recomputes automatically on every setData
@@ -166,6 +173,7 @@ class ChartController {
     /** Replace all bars + markers (used on initial load and timeframe switch). */
     setData(bars, markers = []) {
         this.barMetadata.clear();
+        this.contractsOnChart.clear();
         const candleData = new Array(bars.length);
         const volumeData = new Array(bars.length);
         for (let i = 0; i < bars.length; i++) {
@@ -181,12 +189,14 @@ class ChartController {
                 contract: b.contract || null,
                 sessionDate: b.sessionDate || null,
             });
+            if (b.contract) this.contractsOnChart.add(b.contract);
         }
         this.candleSeries.setData(candleData);
         this.volumeSeries.setData(volumeData);
         this.setMarkers(markers);
         this.lastCandleData = candleData;
         this._recomputeGhostOverlay();
+        this._emitContractsChange();
     }
 
     /** Set the GhostEngine the chart should consult on every setData. Pass
@@ -264,6 +274,10 @@ class ChartController {
             contract: bar.contract || null,
             sessionDate: bar.sessionDate || null,
         });
+        if (bar.contract && !this.contractsOnChart.has(bar.contract)) {
+            this.contractsOnChart.add(bar.contract);
+            this._emitContractsChange();
+        }
 
         // Keep lastCandleData in sync with the chart so ghost overlay can
         // recompute against the bar set the user actually sees. New-bar
@@ -343,8 +357,20 @@ class ChartController {
     setHoverEndCallback(cb) { this.onHoverEndCallback = cb; }
     isHovering() { return this._hoverActive; }
 
+    /** cb([...contractSymbols]) fired whenever the set of distinct contracts on
+     *  the chart changes (chronological order). Used by the >1-contract flag. */
+    setContractsChangeCallback(cb) { this.onContractsChangeCallback = cb; }
+    getContractsOnChart() { return Array.from(this.contractsOnChart); }
+    _emitContractsChange() {
+        if (this.onContractsChangeCallback) {
+            this.onContractsChangeCallback(Array.from(this.contractsOnChart));
+        }
+    }
+
     clear() {
         this.barMetadata.clear();
+        this.contractsOnChart.clear();
+        this._emitContractsChange();
         this.markers = [];
         for (const line of this.stopPriceLines.values()) this.candleSeries.removePriceLine(line);
         this.stopPriceLines.clear();

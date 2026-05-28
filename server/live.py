@@ -317,55 +317,118 @@ class LiveAssetManager:
         self._ready.set()
 
     async def add_subscriber(self, asset_symbol: str, queue: asyncio.Queue) -> bool:
-        """Register subscriber and flush bar_history with backpressure.
+        """Flush bar_history to the queue, THEN register it as a live
+        subscriber — strictly in that order, so the client receives a
+        time-ordered stream (all history, then all live) with no
+        interleaving.
 
-        The flush is async because dropping bars on QueueFull (the old
-        behavior) created a visible gap on the chart between prime cutoff
-        and live now: the chart would render only the partial history,
-        which on reconnect looked like the bars "jumped back" to the
-        prime's build time. Two changes fix that:
+        Why the ordering matters
+        ------------------------
+        ``_on_record`` fans every live bar out to each queue in
+        ``st.subscribers``. The earlier design registered the queue
+        *before* flushing bar_history, so live "now" bars interleaved into
+        the queue between history batches. The client then received a "now"
+        bar before the history bars covering the buckets between its prime
+        cutoff and now; its incremental renderer jumped the forming bar to
+        "now" and never painted the skipped buckets — a visible chart gap
+        that only a full re-aggregation (timeframe switch) repaired. Most
+        visible on high-trade assets (NQ), whose long bar_history makes the
+        flush long enough to guarantee a live bar lands mid-flush.
 
-          1. ``await asyncio.sleep(0)`` every CHUNK items yields to the
-             event loop so ``send_loop`` can drain to the WebSocket
-             concurrently. Without this, the sync put-loop hogged the loop
-             and the queue accumulated to its 100k cap.
-          2. On QueueFull, ``await queue.put`` with a 10s timeout instead
-             of ``break``. This applies real backpressure — recv_loop
-             waits for the consumer to drain rather than silently
-             dropping bars. The 10s timeout protects against a wedged
-             consumer (browser tab paused, WebSocket dead): in that case
-             we log and bail, same end state as before but only after
-             genuine failure.
+        Flushing first and registering last guarantees the client gets
+        history then live, contiguous and ordered, so every bucket paints
+        in sequence and no gap forms.
+
+        How it converges
+        -----------------
+        Each pass flushes the bars that appeared since the previous pass.
+        Finalized 1s bars arrive at ~1-2/sec while a flush pass drains far
+        faster, so the pending delta shrinks to nothing within a few passes
+        (~3 in practice); the queue is then appended to ``st.subscribers``
+        under ``st.lock`` while the pending set is empty. Because
+        ``_on_record`` appends to bar_history and reads st.subscribers
+        under that same lock, every bar added after registration also
+        reaches this queue — no bar falls between the flush and the live
+        stream.
+
+        Delta is tracked by bar timestamp, not list index: bar_history is a
+        bounded deque (HISTORY_MAXLEN) that can evict from the front on a
+        long-running server, which would shift indices; timestamps are
+        stable and strictly increasing per asset.
+
+        Backpressure: within a pass, ``asyncio.sleep(0)`` every CHUNK items
+        lets ``send_loop`` drain to the WebSocket concurrently; on
+        QueueFull, ``await queue.put`` with a 10s timeout applies real
+        backpressure. A consumer that cannot drain for 10s (dead/paused
+        tab) is treated as failed: the queue is registered anyway so live
+        resumes if it recovers, and the undelivered tail is logged.
         """
         st = self._assets.get(asset_symbol)
         if st is None:
             return False
         with st.lock:
             if queue in st.subscribers:
-                # Already attached — don't double-register or the queue will
-                # receive duplicate copies of every bar.
+                # Already attached — don't double-register or the queue
+                # would receive duplicate copies of every bar.
                 return True
-            history_snapshot = list(st.bar_history)
-            st.subscribers.append(queue)
-        # Frontend dedupes by t against anything already in its tape, so
-        # finalized 1s bars from server-side history bridge the gap from
-        # prime cutoff to live now without doubles.
+
         CHUNK = 500
-        for i, payload in enumerate(history_snapshot):
-            if i and i % CHUNK == 0:
-                await asyncio.sleep(0)
-            try:
-                queue.put_nowait(payload)
-            except asyncio.QueueFull:
-                try:
-                    await asyncio.wait_for(queue.put(payload), timeout=10.0)
-                except asyncio.TimeoutError:
-                    logger.warning(
-                        "Subscriber queue stalled flushing %s (consumer cant "
-                        "drain in 10s); dropped %d remaining bars",
-                        asset_symbol, len(history_snapshot) - i,
-                    )
+        # Safety bound on the converge loop. Not reached under normal
+        # conditions; guards against a pathologically slow consumer or an
+        # extreme bar-arrival rate so this can never spin forever.
+        MAX_PASSES = 50
+        last_t: Optional[int] = None  # ts of the last history bar flushed
+
+        for _pass in range(MAX_PASSES):
+            with st.lock:
+                snapshot = list(st.bar_history)
+                if last_t is None:
+                    pending = snapshot
+                else:
+                    pending = [p for p in snapshot if p["bar"]["t"] > last_t]
+                if not pending:
+                    # Caught up — register atomically. Any bar appended
+                    # after this point is fanned out by _on_record (which
+                    # shares st.lock), so the live stream continues this
+                    # queue with no missing bar and no interleaved gap.
+                    st.subscribers.append(queue)
                     return True
+
+            # Flush this pass OUTSIDE the lock so _on_record is never
+            # blocked. Live bars produced meanwhile land in bar_history
+            # (this queue is not yet a subscriber); the next pass picks
+            # them up. The frontend dedupes by t, so any overlap with the
+            # client's prime is harmless.
+            for i, payload in enumerate(pending):
+                if i and i % CHUNK == 0:
+                    await asyncio.sleep(0)
+                try:
+                    queue.put_nowait(payload)
+                except asyncio.QueueFull:
+                    try:
+                        await asyncio.wait_for(queue.put(payload), timeout=10.0)
+                    except asyncio.TimeoutError:
+                        logger.warning(
+                            "Subscriber queue stalled flushing %s (consumer "
+                            "cant drain in 10s); %d history bars undelivered",
+                            asset_symbol, len(pending) - i,
+                        )
+                        with st.lock:
+                            if queue not in st.subscribers:
+                                st.subscribers.append(queue)
+                        return True
+            last_t = pending[-1]["bar"]["t"]
+
+        # Did not converge (extreme conditions only). Register so live
+        # still works; a brief flush interleave is possible — degrades to
+        # the pre-atomic behavior, never worse.
+        logger.warning(
+            "add_subscriber for %s did not converge in %d passes; "
+            "registering anyway", asset_symbol, MAX_PASSES,
+        )
+        with st.lock:
+            if queue not in st.subscribers:
+                st.subscribers.append(queue)
         return True
 
     def remove_subscriber(self, asset_symbol: str, queue: asyncio.Queue) -> None:

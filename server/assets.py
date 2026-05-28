@@ -73,6 +73,16 @@ ASSETS = {
         "price_decimals": 0,
         "min_qty_increment": 0.1,      # MNK (Micro Nikkei USD) is 1/10 of NKD
     },
+    "RTY": {
+        "name": "Russell 2000 E-mini",
+        "description": "CME E-mini Russell 2000",
+        "dataset": "GLBX.MDP3",
+        "tick_size": 0.10,             # 0.10 index points = $5.00 per contract
+        "point_value": 50.0,           # $50.00 per index point
+        "month_codes": "HMUZ",         # quarterly Mar/Jun/Sep/Dec
+        "price_decimals": 1,
+        "min_qty_increment": 0.1,      # M2K (Micro E-mini Russell 2000) is 1/10 of RTY
+    },
     "GC": {
         "name": "Gold",
         "description": "COMEX Gold",
@@ -192,6 +202,16 @@ ASSETS = {
         "month_codes": "HMUZ",
         "price_decimals": 4,
         "min_qty_increment": 0.1,      # M6A (Micro AUD) is 1/10 of 6A
+    },
+    "ZN": {
+        "name": "10-Year T-Note",
+        "description": "CBOT 10-Year U.S. Treasury Note",
+        "dataset": "GLBX.MDP3",
+        "tick_size": 0.015625,         # 1/2 of 1/32 pt = 1/64 = $15.625 per $100k face
+        "point_value": 1000.0,         # 1 pt = 1% of $100,000 face = $1,000
+        "month_codes": "HMUZ",         # quarterly Mar/Jun/Sep/Dec
+        "price_decimals": 6,           # need 6 to render 0.015625 exactly
+        "min_qty_increment": 1.0,      # no clean 1/10 micro (M10Y tracks yield, not price)
     },
 }
 

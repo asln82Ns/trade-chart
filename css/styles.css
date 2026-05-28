@@ -736,6 +736,23 @@ button:disabled {
     color: #777 !important;
 }
 
+/* Yellow pill shown when the chart's data spans more than one contract
+   (a roll in the loaded window, or the live prime→live contract seam). Needs
+   its own [hidden] rule with !important: the bare `hidden` attribute is
+   overridden by author display rules (same pattern as .weather-panel etc.). */
+.contract-split-flag {
+    align-self: center;
+    background: #f5c518;
+    color: #1a1a1a;
+    font-size: 12px;
+    font-weight: 600;
+    padding: 3px 9px;
+    border-radius: 4px;
+    white-space: nowrap;
+    cursor: help;
+}
+.contract-split-flag[hidden] { display: none !important; }
+
 .info-item .rank-idx {
     font-size: 11px;
     color: #888;

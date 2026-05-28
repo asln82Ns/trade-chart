@@ -1,9 +1,10 @@
 # Trade Chart
 
-Browser-based futures **replay simulator + live monitor** for 15 CME-group
-contracts. Pulls 1-second OHLCV from Databento, volume-splices contracts
-into a continuous price series, computes percentile-rank metrics over a
-configurable lookback, and supports threshold-based alerts.
+Browser-based futures **replay simulator + live monitor** for 19 CME-group
+contracts. Pulls market data from Databento (1-second OHLCV for historical
+/ replay, trade ticks for live), volume-splices contracts into a continuous
+price series, computes percentile-rank metrics over a configurable
+lookback, and supports threshold-based alerts.
 
 ```
 ┌─────────────┐     HTTP / WS     ┌──────────────────────┐    HTTPS / Live    ┌──────────────┐
@@ -14,11 +15,11 @@ configurable lookback, and supports threshold-based alerts.
 
 ## Features
 
-- **15 supported assets** (all GLBX.MDP3): NG, CL, HO, NQ, YM, GC, SI, PL,
-  MBT, 6E, 6B, 6C, 6S, 6J, 6N
+- **19 supported assets** (all GLBX.MDP3): NG, CL, HO, NQ, YM, NKD, GC, SI,
+  HG, PL, MBT, 6E, 6B, 6C, 6S, 6J, 6N, 6A, ZN
 - Two modes: **Replay** (historical entry-anchored playback with simulated
   trading) and **Live** (real-time bars on today's volume-leader contract)
-- All 15 assets stream on **one Databento Live connection** (1 of the 10
+- All 19 assets stream on **one Databento Live connection** (1 of the 10
   Standard-plan slots), pre-warmed at startup
 - Timeframes: 1m, 5m, 15m, 30m, 1h, 90m, 3h, 4h, 1D
 - All times shown in **America/New_York** (ET)
@@ -58,8 +59,8 @@ python -m uvicorn server.main:app --reload --port 8001
 
 On startup the server pre-warms (in parallel) the splice schedule + active
 contract for every asset, opens a single Databento Live session subscribed
-to all 30 raw_symbols (15 × {1-digit, 2-digit fallback}), then sequentially
-pre-builds the **5m rank cache** for all 15 assets in the background. After
+to all 38 raw_symbols (19 × {1-digit, 2-digit fallback}), then sequentially
+pre-builds the **5m rank cache** for all 19 assets in the background. After
 ~5–25 minutes (cold cache) every default-tf chart switch is instant; on
 warm-cache restarts the pre-warm completes in seconds.
 
@@ -117,7 +118,7 @@ python scripts/probe_live.py NG
 # Test 2 — replay path healthy? (1 symbol + replay window)
 python scripts/probe_live.py NG --start-seconds-back 7200
 
-# Test 3 — full main-server replication (15 assets × 2 forms + replay)
+# Test 3 — full main-server replication (19 assets × 2 forms + replay)
 python scripts/probe_live.py --all-assets --start-seconds-back 7200
 ```
 
@@ -239,13 +240,26 @@ WebSocket regardless of which asset the client is currently viewing.
 
 ## Data flow (live)
 
-- All 15 assets are subscribed at server startup with `start =
-  today_midnight_UTC` so Databento Live replays from the historical archive
+- **Front-month resolution.** At startup `resolve_front_month`
+  (`server/splice.py`) picks each asset's active contract: of the contracts
+  anchored within ±120 days of today, the one with the highest volume on
+  the most recent shared trading session wins. This is a *separate, simpler*
+  algorithm from the historical volume-splice roll — live picks one contract
+  and does **not** re-roll mid-run.
+- **One Live session.** All 19 assets are subscribed at server startup on a
+  single Databento Live connection (`trades` schema) with `start =
+  today_midnight_UTC`, so the feed replays from the historical archive
   cutoff to "now," eliminating the chart-gap problem.
-- One persistent WebSocket per browser session; surveillance of multiple
-  assets and global alert broadcast share the same socket.
-- Per-asset `bar_history` deque (24h cap) means a re-attaching subscriber
-  catches up cleanly without a hole.
+- **WebSocket fan-out.** One persistent WebSocket per browser session;
+  surveillance of multiple assets and global alert broadcast share the
+  socket.
+- **Reconnect bridge.** Per-asset `bar_history` deque (`maxlen=86400`
+  finalized 1s bars) means a re-attaching subscriber catches up cleanly
+  without a hole.
+
+Full methodology — front-month resolution, subscription parameters, record
+handling, prime payload, operational rules — is in
+[`docs/databento-live-interaction.md`](docs/databento-live-interaction.md).
 
 ## Volume-splice methodology
 
@@ -264,6 +278,17 @@ For each asset:
 6. If the same-instant 18:00 ET bar is missing for either contract, the roll
    is flagged as `incomplete=True` and rendered with an orange marker (vs
    blue for complete rolls). The spread is set to 0 in that case.
+7. Two forward-only safety fallbacks keep the schedule from freezing on an
+   expired contract when the daily-volume cache has gaps: a **cache-gap
+   fallback** rolls when the current contract has been silent ≥5 trading
+   sessions and the next is trading; a **dead-contract fallback** advances
+   one contract when a whole span of the cache is truncated (capped at one
+   advance per session). See `build_schedule` in `server/splice.py` for the
+   exact trigger conditions.
+
+This methodology is **replay/historical only**. Live mode does not splice —
+it streams a single front-month contract chosen at startup (see "Data flow
+(live)" above and `docs/databento-live-interaction.md`).
 
 ## Project layout
 
@@ -282,7 +307,7 @@ trade-chart/
 │   ├── trade-simulator.js
 │   └── main.js
 ├── server/
-│   ├── assets.py           # 15-asset config (tick/point/decimals/month codes)
+│   ├── assets.py           # 19-asset config (tick/point/decimals/month codes)
 │   ├── sessions.py         # CME session boundary helpers
 │   ├── databento_client.py # Historical fetch + rolling (ohlcv-1d) / exact (ohlcv-1s) parquet caching
 │   ├── splice.py           # volume-splice schedule construction
@@ -291,6 +316,10 @@ trade-chart/
 │   ├── alerts.py           # AlertManager (rising-edge eval, broadcast)
 │   ├── main.py             # FastAPI app + startup pre-warm tasks
 │   └── data_cache/         # parquet + ranks JSON cache (gitignored)
+├── docs/
+│   ├── databento-live-interaction.md  # live-mode Databento integration spec
+│   ├── live-feed-known-issues.md      # live feed debugging log
+│   └── weather-data-spec.md           # weather panel ingestion spec
 ├── requirements.txt
 ├── .env.example
 └── README.md
@@ -310,8 +339,9 @@ trade-chart/
 - Holidays surface as empty sessions and are skipped naturally.
 - Daily (1D) bars anchor to the 18:00 ET CME session open; sub-daily
   timeframes anchor to ET wall-clock midnight.
-- A contract roll mid-live-session won't auto-follow; reconnect to pick up
-  the new active contract.
+- A contract roll is not auto-followed mid-run: the live front month is
+  resolved once at server startup. Restart the server to re-resolve front
+  months (a WebSocket reconnect alone does not).
 - Alerts are in-memory; cleared on server restart. The alert chip's
   `@N% ×K` (latest value, fire count) updates via 5s polling of `/alerts`.
 - Rank pre-warm covers only the **5m timeframe**. Other timeframes
@@ -328,7 +358,7 @@ trade-chart/
   `CORS_ORIGINS` in `.env`).
 - **Empty `/load` response** — try a different entry date; some intraday
   windows (especially right after a holiday) have thin data.
-- **`gateway error: Failed to resolve symbol N/15: <X>` at startup** —
+- **`gateway error: Failed to resolve symbol N/36: <X>` at startup** —
   expected. Each asset gets both 1-digit and 2-digit raw_symbol forms; the
   gateway resolves whichever it recognizes and rejects the other. Check the
   immediately following `Mapped instrument_id=N → ASSET (RAW)` lines to

@@ -246,6 +246,7 @@ class App {
             chartContainer: document.getElementById('chartContainer'),
             ghostBtn: document.getElementById('ghostBtn'),
             ghostInfoItem: document.getElementById('ghostInfoItem'),
+            contractSplitFlag: document.getElementById('contractSplitFlag'),
             ghostInfo: document.getElementById('ghostInfo'),
             ghostConfigGroup: document.getElementById('ghostConfigGroup'),
             ghostPercentile: document.getElementById('ghostPercentile'),
@@ -269,6 +270,7 @@ class App {
         this.rankCompare = new RankCompareEngine(this.api, this.el.rankComparePanel);
 
         this.chart = new ChartController(this.el.chartContainer);
+        this.chart.setContractsChangeCallback((contracts) => this._renderContractSplitFlag(contracts));
         // Trend-status panel: pure-local buy/sell-strength strips computed off
         // the chart's live candle array. No fetch — just reads getCandleData().
         this.trendStatus = new TrendStatusEngine(
@@ -1881,6 +1883,18 @@ class App {
             anchor = new Date().toISOString().slice(0, 10);
         }
         if (anchor) this.weather.setAnchor(anchor);
+    }
+
+    _renderContractSplitFlag(contracts) {
+        const el = this.el.contractSplitFlag;
+        if (!el) return;
+        if (contracts && contracts.length >= 2) {
+            el.textContent = `⚑ Data from ${contracts.length} contracts on chart`;
+            el.title = contracts.join(' → ');
+            el.hidden = false;
+        } else {
+            el.hidden = true;
+        }
     }
 
     _updateGhostInfo(ghost) {
