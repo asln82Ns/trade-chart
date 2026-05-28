@@ -397,3 +397,20 @@ trade-chart/
      to localise: probe receives records → server bug; probe also gets 0
      → Databento gateway-side. See "Restarting safely" above for the
      slot-exhaustion matrix.
+
+## License
+
+Copyright © 2026 Ethan Lawinsky.
+
+This program is free software: you can redistribute it and/or modify it
+under the terms of the **GNU Affero General Public License v3.0** as
+published by the Free Software Foundation. See [`LICENSE`](LICENSE) for the
+full text, or <https://www.gnu.org/licenses/agpl-3.0.html>.
+
+Because the AGPL's network clause (section 13) applies, anyone who runs a
+modified version of this server and lets others interact with it over a
+network must make their modified source available to those users.
+
+**Market data is not covered by this license.** Databento data, and your
+`DATABENTO_API_KEY`, are governed by your own agreement with Databento. This
+license grants no rights to any market data.
